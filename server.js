@@ -27,7 +27,15 @@ const WECHAT_MP_KEYWORDS = (process.env.WECHAT_MP_KEYWORDS || "影视,音乐,综
 const WECHAT_MP_SORT_TYPE = process.env.WECHAT_MP_SORT_TYPE || "_0";
 const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS || 9000);
 const HOT_CACHE_TTL_MS = Number(process.env.HOT_CACHE_TTL_MS || 180000);
-let hotCache = null;
+const USER_AGENTS = {
+  desktop:
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+  mobile:
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+  tablet:
+    "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+};
+let hotCache = {};
 const TIANAPI_KEY = process.env.TIANAPI_KEY || "";
 const TIANAPI_WECHAT_ENDPOINT =
   process.env.TIANAPI_WECHAT_ENDPOINT || "https://apis.tianapi.com/wxhottopic/index";
@@ -108,6 +116,27 @@ function sendJson(response, status, payload) {
 function sendText(response, status, text, type = "text/plain; charset=utf-8") {
   response.writeHead(status, { "content-type": type });
   response.end(text);
+}
+
+function detectClientProfile(request) {
+  const url = new URL(request.url, `http://localhost:${PORT}`);
+  const override = url.searchParams.get("device");
+  const rawUserAgent = String(request.headers["user-agent"] || "");
+  const isTablet = /ipad|tablet|playbook|silk/i.test(rawUserAgent);
+  const isMobile = /mobile|iphone|ipod|android.*mobile|windows phone/i.test(rawUserAgent);
+  const type = ["desktop", "mobile", "tablet"].includes(override)
+    ? override
+    : isTablet
+      ? "tablet"
+      : isMobile
+        ? "mobile"
+        : "desktop";
+
+  return {
+    type,
+    rawUserAgent,
+    upstreamUserAgent: USER_AGENTS[type] || USER_AGENTS.desktop,
+  };
 }
 
 function normalizeTitle(title) {
@@ -320,8 +349,7 @@ async function fetchJson(url, options = {}) {
   const response = await fetch(url, {
     headers: {
       accept: "application/json,text/plain,*/*",
-      "user-agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+      "user-agent": options.userAgent || USER_AGENTS.desktop,
       ...(options.headers || {}),
     },
     signal: controller.signal,
@@ -331,8 +359,10 @@ async function fetchJson(url, options = {}) {
   return response.json();
 }
 
-async function fetchWeibo() {
-  const data = await fetchJson("https://api.xhus.cn/api/rweibo?encode=json");
+async function fetchWeibo(clientProfile = {}) {
+  const data = await fetchJson("https://api.xhus.cn/api/rweibo?encode=json", {
+    userAgent: clientProfile.upstreamUserAgent,
+  });
   return (data.data || []).map((item, index) => {
     const title = normalizeTitle(item.title || item.word || item.note || item.word_scheme);
     return {
@@ -346,8 +376,10 @@ async function fetchWeibo() {
   });
 }
 
-async function fetchDouyin() {
-  const data = await fetchJson("https://api.xhus.cn/api/rdouyin?encode=json");
+async function fetchDouyin(clientProfile = {}) {
+  const data = await fetchJson("https://api.xhus.cn/api/rdouyin?encode=json", {
+    userAgent: clientProfile.upstreamUserAgent,
+  });
   return (data.data || []).map((item, index) => {
     const title = normalizeTitle(item.word || item.sentence || item.title || item.label);
     return {
@@ -361,7 +393,7 @@ async function fetchDouyin() {
   });
 }
 
-async function fetchXiaohongshu() {
+async function fetchXiaohongshu(clientProfile = {}) {
   if (!TIKHUB_API_KEY) {
     throw new Error("未配置 TIKHUB_API_KEY");
   }
@@ -373,6 +405,7 @@ async function fetchXiaohongshu() {
         headers: {
           authorization: `Bearer ${TIKHUB_API_KEY}`,
         },
+        userAgent: clientProfile.upstreamUserAgent,
       },
       2,
     );
@@ -403,6 +436,7 @@ async function fetchXiaohongshu() {
           headers: {
             authorization: `Bearer ${TIKHUB_API_KEY}`,
           },
+          userAgent: clientProfile.upstreamUserAgent,
         },
         2,
       );
@@ -431,7 +465,7 @@ async function fetchXiaohongshu() {
   throw new Error(firstError || "TikHub 小红书接口暂无返回");
 }
 
-async function fetchWechat() {
+async function fetchWechat(clientProfile = {}) {
   if (TIKHUB_API_KEY) {
     const results = await Promise.allSettled(
       WECHAT_MP_KEYWORDS.map(async (keyword) => {
@@ -445,6 +479,7 @@ async function fetchWechat() {
             headers: {
               authorization: `Bearer ${TIKHUB_API_KEY}`,
             },
+            userAgent: clientProfile.upstreamUserAgent,
           },
           4,
         );
@@ -475,7 +510,9 @@ async function fetchWechat() {
 
   const url = new URL(TIANAPI_WECHAT_ENDPOINT);
   url.searchParams.set("key", TIANAPI_KEY);
-  const data = await fetchJson(url.toString());
+  const data = await fetchJson(url.toString(), {
+    userAgent: clientProfile.upstreamUserAgent,
+  });
 
   return extractList(data).map((item, index) => {
     const title = pickTitle(item);
@@ -595,9 +632,11 @@ function buildFallbackItems() {
   });
 }
 
-async function getHotItems() {
-  if (hotCache && Date.now() - hotCache.cachedAt < HOT_CACHE_TTL_MS) {
-    return { ...hotCache.payload, cached: true };
+async function getHotItems(clientProfile = { type: "desktop", upstreamUserAgent: USER_AGENTS.desktop }) {
+  const cacheKey = clientProfile.type || "desktop";
+  const cached = hotCache[cacheKey];
+  if (cached && Date.now() - cached.cachedAt < HOT_CACHE_TTL_MS) {
+    return { ...cached.payload, cached: true };
   }
 
   const previousSnapshot = await readPreviousSnapshot();
@@ -607,7 +646,7 @@ async function getHotItems() {
     ["小红书", fetchXiaohongshu],
     ["公众号", fetchWechat],
   ];
-  const settled = await Promise.allSettled(sourceFetchers.map(([, fetcher]) => fetcher()));
+  const settled = await Promise.allSettled(sourceFetchers.map(([, fetcher]) => fetcher(clientProfile)));
   const sources = settled.map((result, index) => ({
     platform: sourceFetchers[index][0],
     ok: result.status === "fulfilled",
@@ -622,12 +661,13 @@ async function getHotItems() {
 
   const payload = {
     updatedAt: new Date().toISOString(),
+    clientDevice: clientProfile.type,
     live: mergedItems.length > 0,
     sources,
     items,
   };
 
-  hotCache = {
+  hotCache[cacheKey] = {
     cachedAt: Date.now(),
     payload,
   };
@@ -670,7 +710,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.url.startsWith("/api/hot")) {
-      sendJson(response, 200, await getHotItems());
+      sendJson(response, 200, await getHotItems(detectClientProfile(request)));
       return;
     }
     await serveStatic(request, response);
