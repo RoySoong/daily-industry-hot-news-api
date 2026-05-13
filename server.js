@@ -6,6 +6,13 @@ const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "0.0.0.0";
 const ROOT = __dirname;
 const SNAPSHOT_FILE = path.join(ROOT, "data", "snapshots.json");
+const TIKHUB_API_KEY = process.env.TIKHUB_API_KEY || "";
+const TIKHUB_XHS_ENDPOINT =
+  process.env.TIKHUB_XHS_ENDPOINT ||
+  "https://api.tikhub.io/api/v1/xiaohongshu/web_v2/fetch_hot_list";
+const TIANAPI_KEY = process.env.TIANAPI_KEY || "";
+const TIANAPI_WECHAT_ENDPOINT =
+  process.env.TIANAPI_WECHAT_ENDPOINT || "https://apis.tianapi.com/wxhottopic/index";
 
 const platformSearchUrls = {
   微博: (title) => `https://s.weibo.com/weibo?q=${encodeURIComponent(title)}`,
@@ -140,12 +147,52 @@ function calcScore(item) {
   );
 }
 
-async function fetchJson(url) {
+function extractList(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.data?.list)) return payload.data.list;
+  if (Array.isArray(payload?.data?.items)) return payload.data.items;
+  if (Array.isArray(payload?.data?.words)) return payload.data.words;
+  if (Array.isArray(payload?.result)) return payload.result;
+  if (Array.isArray(payload?.result?.list)) return payload.result.list;
+  if (Array.isArray(payload?.result?.newslist)) return payload.result.newslist;
+  if (Array.isArray(payload?.newslist)) return payload.newslist;
+  return [];
+}
+
+function pickTitle(item) {
+  return normalizeTitle(
+    item.title ||
+      item.word ||
+      item.keyword ||
+      item.query ||
+      item.name ||
+      item.hotword ||
+      item.topic ||
+      item.desc ||
+      item.content,
+  );
+}
+
+function pickUrl(item, platform, title) {
+  return (
+    item.url ||
+    item.link ||
+    item.share_url ||
+    item.note_url ||
+    item.article_url ||
+    item.source_url ||
+    platformSearchUrls[platform](title)
+  );
+}
+
+async function fetchJson(url, options = {}) {
   const response = await fetch(url, {
     headers: {
       accept: "application/json,text/plain,*/*",
       "user-agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+      ...(options.headers || {}),
     },
   });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
@@ -178,6 +225,58 @@ async function fetchDouyin() {
       interactions: parseHotValue(item.hot_value || item.hotValue, index + 1),
       url: item.share_url || platformSearchUrls.抖音(title),
       fetchedAt: item.event_time ? Number(item.event_time) * 1000 : Date.now(),
+    };
+  });
+}
+
+async function fetchXiaohongshu() {
+  if (!TIKHUB_API_KEY) {
+    throw new Error("未配置 TIKHUB_API_KEY");
+  }
+
+  const data = await fetchJson(TIKHUB_XHS_ENDPOINT, {
+    headers: {
+      authorization: `Bearer ${TIKHUB_API_KEY}`,
+    },
+  });
+
+  return extractList(data).map((item, index) => {
+    const title = pickTitle(item);
+    return {
+      title,
+      platform: "小红书",
+      rank: Number(item.rank || item.index || item.position || index + 1),
+      interactions: parseHotValue(
+        item.hot_value || item.hotValue || item.score || item.heat || item.view_count || item.count,
+        index + 1,
+      ),
+      url: pickUrl(item, "小红书", title),
+      fetchedAt: item.time_stamp ? Number(item.time_stamp) * 1000 : Date.now(),
+    };
+  });
+}
+
+async function fetchWechat() {
+  if (!TIANAPI_KEY) {
+    throw new Error("未配置 TIANAPI_KEY");
+  }
+
+  const url = new URL(TIANAPI_WECHAT_ENDPOINT);
+  url.searchParams.set("key", TIANAPI_KEY);
+  const data = await fetchJson(url.toString());
+
+  return extractList(data).map((item, index) => {
+    const title = pickTitle(item);
+    return {
+      title,
+      platform: "公众号",
+      rank: Number(item.rank || item.index || item.position || index + 1),
+      interactions: parseHotValue(
+        item.hot || item.hotnum || item.hot_value || item.score || item.readnum || item.read || item.count,
+        index + 1,
+      ),
+      url: pickUrl(item, "公众号", title),
+      fetchedAt: Date.now(),
     };
   });
 }
@@ -269,9 +368,15 @@ function buildFallbackItems() {
 
 async function getHotItems() {
   const previousSnapshot = await readPreviousSnapshot();
-  const settled = await Promise.allSettled([fetchWeibo(), fetchDouyin()]);
+  const sourceFetchers = [
+    ["微博", fetchWeibo],
+    ["抖音", fetchDouyin],
+    ["小红书", fetchXiaohongshu],
+    ["公众号", fetchWechat],
+  ];
+  const settled = await Promise.allSettled(sourceFetchers.map(([, fetcher]) => fetcher()));
   const sources = settled.map((result, index) => ({
-    platform: index === 0 ? "微博" : "抖音",
+    platform: sourceFetchers[index][0],
     ok: result.status === "fulfilled",
     error: result.status === "rejected" ? result.reason.message : "",
     count: result.status === "fulfilled" ? result.value.length : 0,
@@ -285,11 +390,7 @@ async function getHotItems() {
   return {
     updatedAt: new Date().toISOString(),
     live: mergedItems.length > 0,
-    sources: [
-      ...sources,
-      { platform: "公众号", ok: false, error: "需要授权数据源或登录采集配置", count: 0 },
-      { platform: "小红书", ok: false, error: "需要授权数据源或登录采集配置", count: 0 },
-    ],
+    sources,
     items,
   };
 }
