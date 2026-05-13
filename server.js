@@ -184,6 +184,48 @@ function extractList(payload) {
   return [];
 }
 
+function findObjectList(value, depth = 0) {
+  if (!value || depth > 6) return [];
+
+  if (Array.isArray(value)) {
+    const objectItems = value.filter((item) => item && typeof item === "object");
+    if (objectItems.length) return objectItems;
+    return [];
+  }
+
+  if (typeof value !== "object") return [];
+
+  const preferredKeys = [
+    "items",
+    "notes",
+    "feeds",
+    "list",
+    "data",
+    "result",
+    "results",
+    "docs",
+    "records",
+    "contents",
+  ];
+
+  for (const key of preferredKeys) {
+    const found = findObjectList(value[key], depth + 1);
+    if (found.length) return found;
+  }
+
+  for (const key of Object.keys(value)) {
+    const found = findObjectList(value[key], depth + 1);
+    if (found.length) return found;
+  }
+
+  return [];
+}
+
+function getList(payload) {
+  const direct = extractList(payload);
+  return direct.length ? direct : findObjectList(payload);
+}
+
 function pickTitle(item) {
   const noteCard = item.note_card || item.noteCard || item.note || {};
   const note = item.note || {};
@@ -254,7 +296,7 @@ function pickHotValue(item, fallbackRank) {
 function summarizePayload(payload) {
   const data = payload?.data;
   const result = payload?.result;
-  const list = extractList(payload);
+  const list = getList(payload);
   return {
     topLevelKeys: payload && typeof payload === "object" ? Object.keys(payload) : [],
     code: payload?.code || payload?.status_code || payload?.status,
@@ -351,7 +393,7 @@ async function fetchXiaohongshu() {
         2,
       );
 
-      return extractList(data)
+      return getList(data)
         .map((item, index) => {
         const title = pickTitle(item);
         return {
@@ -461,7 +503,7 @@ async function fetchWechat() {
           },
           4,
         );
-        return extractList(data).map((item, index) => {
+        return getList(data).map((item, index) => {
           const title = pickTitle(item);
           return {
             title,
