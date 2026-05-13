@@ -73,6 +73,9 @@ function sendJson(response, status, payload) {
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET, OPTIONS",
+    "access-control-allow-headers": "content-type",
   });
   response.end(JSON.stringify(payload));
 }
@@ -315,6 +318,16 @@ async function serveStatic(request, response) {
 
 const server = http.createServer(async (request, response) => {
   try {
+    if (request.method === "OPTIONS") {
+      response.writeHead(204, {
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET, OPTIONS",
+        "access-control-allow-headers": "content-type",
+      });
+      response.end();
+      return;
+    }
+
     if (request.url.startsWith("/api/hot")) {
       sendJson(response, 200, await getHotItems());
       return;
