@@ -9,7 +9,11 @@ const SNAPSHOT_FILE = path.join(ROOT, "data", "snapshots.json");
 const TIKHUB_API_KEY = process.env.TIKHUB_API_KEY || "";
 const TIKHUB_XHS_ENDPOINT =
   process.env.TIKHUB_XHS_ENDPOINT ||
-  "https://api.tikhub.io/api/v1/xiaohongshu/web_v2/fetch_hot_list";
+  "https://api.tikhub.io/api/v1/xiaohongshu/web_v2/fetch_search_notes";
+const XHS_KEYWORDS = (process.env.XHS_KEYWORDS || "影视,音乐,综艺,游戏,动漫")
+  .split(",")
+  .map((keyword) => keyword.trim())
+  .filter(Boolean);
 const TIKHUB_WECHAT_MP_ENDPOINT =
   process.env.TIKHUB_WECHAT_MP_ENDPOINT ||
   "https://api.tikhub.io/api/v1/wechat_mp/web/fetch_search_article";
@@ -17,6 +21,7 @@ const WECHAT_MP_KEYWORDS = (process.env.WECHAT_MP_KEYWORDS || "影视,音乐,综
   .split(",")
   .map((keyword) => keyword.trim())
   .filter(Boolean);
+const WECHAT_MP_SORT_TYPE = process.env.WECHAT_MP_SORT_TYPE || "_0";
 const TIANAPI_KEY = process.env.TIANAPI_KEY || "";
 const TIANAPI_WECHAT_ENDPOINT =
   process.env.TIANAPI_WECHAT_ENDPOINT || "https://apis.tianapi.com/wxhottopic/index";
@@ -157,7 +162,11 @@ function calcScore(item) {
 function extractList(payload) {
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.data?.data)) return payload.data.data;
   if (Array.isArray(payload?.data?.list)) return payload.data.list;
+  if (Array.isArray(payload?.data?.notes)) return payload.data.notes;
+  if (Array.isArray(payload?.data?.items)) return payload.data.items;
+  if (Array.isArray(payload?.data?.feeds)) return payload.data.feeds;
   if (Array.isArray(payload?.data?.items)) return payload.data.items;
   if (Array.isArray(payload?.data?.words)) return payload.data.words;
   if (Array.isArray(payload?.result)) return payload.result;
@@ -168,8 +177,10 @@ function extractList(payload) {
 }
 
 function pickTitle(item) {
+  const noteCard = item.note_card || item.noteCard || item.note || {};
   return normalizeTitle(
     item.title ||
+      noteCard.title ||
       item.word ||
       item.keyword ||
       item.query ||
@@ -182,6 +193,12 @@ function pickTitle(item) {
 }
 
 function pickUrl(item, platform, title) {
+  const noteCard = item.note_card || item.noteCard || item.note || {};
+  const noteId = item.id || item.note_id || item.noteId || noteCard.id || noteCard.note_id;
+  if (platform === "小红书" && noteId) {
+    return `https://www.xiaohongshu.com/explore/${noteId}`;
+  }
+
   return (
     item.url ||
     item.link ||
@@ -191,6 +208,44 @@ function pickUrl(item, platform, title) {
     item.source_url ||
     platformSearchUrls[platform](title)
   );
+}
+
+function pickHotValue(item, fallbackRank) {
+  const noteCard = item.note_card || item.noteCard || item.note || {};
+  const interactInfo = item.interact_info || item.interactInfo || noteCard.interact_info || {};
+  return parseHotValue(
+    item.hot ||
+      item.hotnum ||
+      item.hot_value ||
+      item.hotValue ||
+      item.score ||
+      item.heat ||
+      item.view_count ||
+      item.count ||
+      item.readnum ||
+      item.read ||
+      item.like_count ||
+      item.liked_count ||
+      interactInfo.liked_count ||
+      interactInfo.likedCount ||
+      interactInfo.collected_count,
+    fallbackRank,
+  );
+}
+
+async function fetchJsonWithRetry(url, options = {}, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fetchJson(url, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
+      }
+    }
+  }
+  throw lastError;
 }
 
 async function fetchJson(url, options = {}) {
@@ -241,26 +296,42 @@ async function fetchXiaohongshu() {
     throw new Error("未配置 TIKHUB_API_KEY");
   }
 
-  const data = await fetchJson(TIKHUB_XHS_ENDPOINT, {
-    headers: {
-      authorization: `Bearer ${TIKHUB_API_KEY}`,
-    },
-  });
+  const results = await Promise.allSettled(
+    XHS_KEYWORDS.map(async (keyword) => {
+      const url = new URL(TIKHUB_XHS_ENDPOINT);
+      url.searchParams.set("keywords", keyword);
+      url.searchParams.set("page", "1");
+      url.searchParams.set("sort_type", "popularity_descending");
+      url.searchParams.set("note_type", "0");
+      const data = await fetchJsonWithRetry(
+        url.toString(),
+        {
+          headers: {
+            authorization: `Bearer ${TIKHUB_API_KEY}`,
+          },
+        },
+        2,
+      );
 
-  return extractList(data).map((item, index) => {
-    const title = pickTitle(item);
-    return {
-      title,
-      platform: "小红书",
-      rank: Number(item.rank || item.index || item.position || index + 1),
-      interactions: parseHotValue(
-        item.hot_value || item.hotValue || item.score || item.heat || item.view_count || item.count,
-        index + 1,
-      ),
-      url: pickUrl(item, "小红书", title),
-      fetchedAt: item.time_stamp ? Number(item.time_stamp) * 1000 : Date.now(),
-    };
-  });
+      return extractList(data).map((item, index) => {
+        const title = pickTitle(item);
+        return {
+          title,
+          platform: "小红书",
+          rank: Number(item.rank || item.index || item.position || index + 1),
+          interactions: pickHotValue(item, index + 1),
+          url: pickUrl(item, "小红书", title),
+          fetchedAt: item.time_stamp ? Number(item.time_stamp) * 1000 : Date.now(),
+        };
+      });
+    }),
+  );
+
+  const items = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+  if (items.length) return items;
+
+  const firstError = results.find((result) => result.status === "rejected")?.reason?.message;
+  throw new Error(firstError || "TikHub 小红书接口暂无返回");
 }
 
 async function fetchWechat() {
@@ -270,22 +341,23 @@ async function fetchWechat() {
         const url = new URL(TIKHUB_WECHAT_MP_ENDPOINT);
         url.searchParams.set("keyword", keyword);
         url.searchParams.set("offset", "0");
-        url.searchParams.set("sort_type", "_4");
-        const data = await fetchJson(url.toString(), {
-          headers: {
-            authorization: `Bearer ${TIKHUB_API_KEY}`,
+        url.searchParams.set("sort_type", WECHAT_MP_SORT_TYPE);
+        const data = await fetchJsonWithRetry(
+          url.toString(),
+          {
+            headers: {
+              authorization: `Bearer ${TIKHUB_API_KEY}`,
+            },
           },
-        });
+          4,
+        );
         return extractList(data).map((item, index) => {
           const title = pickTitle(item);
           return {
             title,
             platform: "公众号",
             rank: Number(item.rank || item.index || item.position || index + 1),
-            interactions: parseHotValue(
-              item.hot || item.hotnum || item.hot_value || item.score || item.readnum || item.read || item.count,
-              index + 1,
-            ),
+            interactions: pickHotValue(item, index + 1),
             url: pickUrl(item, "公众号", title),
             fetchedAt: item.publish_time ? Number(item.publish_time) * 1000 : Date.now(),
           };
