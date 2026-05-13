@@ -25,6 +25,9 @@ const WECHAT_MP_KEYWORDS = (process.env.WECHAT_MP_KEYWORDS || "影视,音乐,综
   .map((keyword) => keyword.trim())
   .filter(Boolean);
 const WECHAT_MP_SORT_TYPE = process.env.WECHAT_MP_SORT_TYPE || "_0";
+const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS || 9000);
+const HOT_CACHE_TTL_MS = Number(process.env.HOT_CACHE_TTL_MS || 180000);
+let hotCache = null;
 const TIANAPI_KEY = process.env.TIANAPI_KEY || "";
 const TIANAPI_WECHAT_ENDPOINT =
   process.env.TIANAPI_WECHAT_ENDPOINT || "https://apis.tianapi.com/wxhottopic/index";
@@ -329,6 +332,8 @@ async function fetchJsonWithRetry(url, options = {}, attempts = 3) {
 }
 
 async function fetchJson(url, options = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
   const response = await fetch(url, {
     headers: {
       accept: "application/json,text/plain,*/*",
@@ -336,7 +341,9 @@ async function fetchJson(url, options = {}) {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
       ...(options.headers || {}),
     },
+    signal: controller.signal,
   });
+  clearTimeout(timeoutId);
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
   return response.json();
 }
@@ -402,7 +409,8 @@ async function fetchXiaohongshu() {
       .filter((item) => item.title);
   };
 
-  const searchRequests = XHS_KEYWORDS.map(async (keyword) => {
+  const searchKeywords = XHS_KEYWORDS.slice(0, 2);
+  const searchRequests = searchKeywords.map(async (keyword) => {
       const url = new URL(TIKHUB_XHS_ENDPOINT);
       url.searchParams.set("keyword", keyword);
       url.searchParams.set("page", "1");
@@ -658,6 +666,10 @@ function buildFallbackItems() {
 }
 
 async function getHotItems() {
+  if (hotCache && Date.now() - hotCache.cachedAt < HOT_CACHE_TTL_MS) {
+    return { ...hotCache.payload, cached: true };
+  }
+
   const previousSnapshot = await readPreviousSnapshot();
   const sourceFetchers = [
     ["微博", fetchWeibo],
@@ -678,12 +690,19 @@ async function getHotItems() {
 
   if (mergedItems.length) await writeSnapshot(items);
 
-  return {
+  const payload = {
     updatedAt: new Date().toISOString(),
     live: mergedItems.length > 0,
     sources,
     items,
   };
+
+  hotCache = {
+    cachedAt: Date.now(),
+    payload,
+  };
+
+  return payload;
 }
 
 async function serveStatic(request, response) {
