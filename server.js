@@ -10,6 +10,13 @@ const TIKHUB_API_KEY = process.env.TIKHUB_API_KEY || "";
 const TIKHUB_XHS_ENDPOINT =
   process.env.TIKHUB_XHS_ENDPOINT ||
   "https://api.tikhub.io/api/v1/xiaohongshu/web_v2/fetch_hot_list";
+const TIKHUB_WECHAT_MP_ENDPOINT =
+  process.env.TIKHUB_WECHAT_MP_ENDPOINT ||
+  "https://api.tikhub.io/api/v1/wechat_mp/web/fetch_search_article";
+const WECHAT_MP_KEYWORDS = (process.env.WECHAT_MP_KEYWORDS || "影视,音乐,综艺,游戏,动漫")
+  .split(",")
+  .map((keyword) => keyword.trim())
+  .filter(Boolean);
 const TIANAPI_KEY = process.env.TIANAPI_KEY || "";
 const TIANAPI_WECHAT_ENDPOINT =
   process.env.TIANAPI_WECHAT_ENDPOINT || "https://apis.tianapi.com/wxhottopic/index";
@@ -257,8 +264,44 @@ async function fetchXiaohongshu() {
 }
 
 async function fetchWechat() {
+  if (TIKHUB_API_KEY) {
+    const results = await Promise.allSettled(
+      WECHAT_MP_KEYWORDS.map(async (keyword) => {
+        const url = new URL(TIKHUB_WECHAT_MP_ENDPOINT);
+        url.searchParams.set("keyword", keyword);
+        url.searchParams.set("offset", "0");
+        url.searchParams.set("sort_type", "_4");
+        const data = await fetchJson(url.toString(), {
+          headers: {
+            authorization: `Bearer ${TIKHUB_API_KEY}`,
+          },
+        });
+        return extractList(data).map((item, index) => {
+          const title = pickTitle(item);
+          return {
+            title,
+            platform: "公众号",
+            rank: Number(item.rank || item.index || item.position || index + 1),
+            interactions: parseHotValue(
+              item.hot || item.hotnum || item.hot_value || item.score || item.readnum || item.read || item.count,
+              index + 1,
+            ),
+            url: pickUrl(item, "公众号", title),
+            fetchedAt: item.publish_time ? Number(item.publish_time) * 1000 : Date.now(),
+          };
+        });
+      }),
+    );
+
+    const items = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+    if (items.length) return items;
+
+    const firstError = results.find((result) => result.status === "rejected")?.reason?.message;
+    throw new Error(firstError || "TikHub 公众号接口暂无返回");
+  }
+
   if (!TIANAPI_KEY) {
-    throw new Error("未配置 TIANAPI_KEY");
+    throw new Error("未配置 TIKHUB_API_KEY 或 TIANAPI_KEY");
   }
 
   const url = new URL(TIANAPI_WECHAT_ENDPOINT);
