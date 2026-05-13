@@ -162,15 +162,23 @@ function calcScore(item) {
 function extractList(payload) {
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.items)) return payload.items;
+  if (Array.isArray(payload?.notes)) return payload.notes;
+  if (Array.isArray(payload?.feeds)) return payload.feeds;
+  if (Array.isArray(payload?.list)) return payload.list;
   if (Array.isArray(payload?.data?.data)) return payload.data.data;
   if (Array.isArray(payload?.data?.list)) return payload.data.list;
   if (Array.isArray(payload?.data?.notes)) return payload.data.notes;
   if (Array.isArray(payload?.data?.items)) return payload.data.items;
   if (Array.isArray(payload?.data?.feeds)) return payload.data.feeds;
-  if (Array.isArray(payload?.data?.items)) return payload.data.items;
+  if (Array.isArray(payload?.data?.result?.items)) return payload.data.result.items;
+  if (Array.isArray(payload?.data?.result?.notes)) return payload.data.result.notes;
+  if (Array.isArray(payload?.data?.result?.feeds)) return payload.data.result.feeds;
   if (Array.isArray(payload?.data?.words)) return payload.data.words;
   if (Array.isArray(payload?.result)) return payload.result;
   if (Array.isArray(payload?.result?.list)) return payload.result.list;
+  if (Array.isArray(payload?.result?.items)) return payload.result.items;
+  if (Array.isArray(payload?.result?.notes)) return payload.result.notes;
   if (Array.isArray(payload?.result?.newslist)) return payload.result.newslist;
   if (Array.isArray(payload?.newslist)) return payload.newslist;
   return [];
@@ -178,12 +186,17 @@ function extractList(payload) {
 
 function pickTitle(item) {
   const noteCard = item.note_card || item.noteCard || item.note || {};
+  const note = item.note || {};
   return normalizeTitle(
     item.title ||
       noteCard.title ||
       noteCard.display_title ||
       noteCard.desc ||
+      note.title ||
+      note.display_title ||
+      note.desc ||
       item.display_title ||
+      item.desc ||
       item.word ||
       item.keyword ||
       item.query ||
@@ -306,9 +319,9 @@ async function fetchXiaohongshu() {
       const url = new URL(TIKHUB_XHS_ENDPOINT);
       url.searchParams.set("keyword", keyword);
       url.searchParams.set("page", "1");
-      url.searchParams.set("sort_type", "popularity_descending");
+      url.searchParams.set("sort_type", "general");
       url.searchParams.set("note_type", "不限");
-      url.searchParams.set("time_filter", "一周内");
+      url.searchParams.set("time_filter", "不限");
       url.searchParams.set("source", "explore_feed");
       url.searchParams.set("ai_mode", "0");
       const data = await fetchJsonWithRetry(
@@ -321,7 +334,8 @@ async function fetchXiaohongshu() {
         2,
       );
 
-      return extractList(data).map((item, index) => {
+      return extractList(data)
+        .map((item, index) => {
         const title = pickTitle(item);
         return {
           title,
@@ -331,7 +345,8 @@ async function fetchXiaohongshu() {
           url: pickUrl(item, "小红书", title),
           fetchedAt: item.time_stamp ? Number(item.time_stamp) * 1000 : Date.now(),
         };
-      });
+        })
+        .filter((item) => item.title);
     }),
   );
 
