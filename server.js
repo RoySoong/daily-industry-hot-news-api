@@ -10,6 +10,9 @@ const TIKHUB_API_KEY = process.env.TIKHUB_API_KEY || "";
 const TIKHUB_XHS_ENDPOINT =
   process.env.TIKHUB_XHS_ENDPOINT ||
   "https://api.tikhub.io/api/v1/xiaohongshu/app_v2/search_notes";
+const TIKHUB_XHS_HOT_ENDPOINT =
+  process.env.TIKHUB_XHS_HOT_ENDPOINT ||
+  "https://api.tikhub.io/api/v1/xiaohongshu/web_v2/fetch_hot_list";
 const XHS_KEYWORDS = (process.env.XHS_KEYWORDS || "影视,音乐,综艺,游戏,动漫")
   .split(",")
   .map((keyword) => keyword.trim())
@@ -373,16 +376,36 @@ async function fetchXiaohongshu() {
     throw new Error("未配置 TIKHUB_API_KEY");
   }
 
-  const results = await Promise.allSettled(
-    XHS_KEYWORDS.map(async (keyword) => {
+  const hotListRequest = async () => {
+    const data = await fetchJsonWithRetry(
+      TIKHUB_XHS_HOT_ENDPOINT,
+      {
+        headers: {
+          authorization: `Bearer ${TIKHUB_API_KEY}`,
+        },
+      },
+      2,
+    );
+
+    return getList(data)
+      .map((item, index) => {
+        const title = pickTitle(item);
+        return {
+          title,
+          platform: "小红书",
+          rank: Number(item.rank || item.index || item.position || index + 1),
+          interactions: pickHotValue(item, index + 1),
+          url: pickUrl(item, "小红书", title),
+          fetchedAt: Date.now(),
+        };
+      })
+      .filter((item) => item.title);
+  };
+
+  const searchRequests = XHS_KEYWORDS.map(async (keyword) => {
       const url = new URL(TIKHUB_XHS_ENDPOINT);
       url.searchParams.set("keyword", keyword);
       url.searchParams.set("page", "1");
-      url.searchParams.set("sort_type", "general");
-      url.searchParams.set("note_type", "不限");
-      url.searchParams.set("time_filter", "不限");
-      url.searchParams.set("source", "explore_feed");
-      url.searchParams.set("ai_mode", "0");
       const data = await fetchJsonWithRetry(
         url.toString(),
         {
@@ -406,8 +429,9 @@ async function fetchXiaohongshu() {
         };
         })
         .filter((item) => item.title);
-    }),
-  );
+    });
+
+  const results = await Promise.allSettled([hotListRequest(), ...searchRequests]);
 
   const items = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
   if (items.length) return items;
