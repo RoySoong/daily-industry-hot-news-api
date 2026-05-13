@@ -251,6 +251,23 @@ function pickHotValue(item, fallbackRank) {
   );
 }
 
+function summarizePayload(payload) {
+  const data = payload?.data;
+  const result = payload?.result;
+  const list = extractList(payload);
+  return {
+    topLevelKeys: payload && typeof payload === "object" ? Object.keys(payload) : [],
+    code: payload?.code || payload?.status_code || payload?.status,
+    message: payload?.message || payload?.msg || payload?.detail,
+    dataType: Array.isArray(data) ? "array" : typeof data,
+    dataKeys: data && typeof data === "object" && !Array.isArray(data) ? Object.keys(data) : [],
+    resultType: Array.isArray(result) ? "array" : typeof result,
+    resultKeys: result && typeof result === "object" && !Array.isArray(result) ? Object.keys(result) : [],
+    extractedCount: list.length,
+    firstExtractedItem: list[0] || null,
+  };
+}
+
 async function fetchJsonWithRetry(url, options = {}, attempts = 3) {
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -355,6 +372,76 @@ async function fetchXiaohongshu() {
 
   const firstError = results.find((result) => result.status === "rejected")?.reason?.message;
   throw new Error(firstError || "TikHub 小红书接口暂无返回");
+}
+
+async function debugXiaohongshu() {
+  if (!TIKHUB_API_KEY) {
+    return { ok: false, error: "未配置 TIKHUB_API_KEY" };
+  }
+
+  const keyword = XHS_KEYWORDS[0] || "影视";
+  const attempts = [
+    {
+      name: "app_v2_search_notes_default",
+      endpoint: TIKHUB_XHS_ENDPOINT,
+      params: {
+        keyword,
+        page: "1",
+        sort_type: "general",
+        note_type: "不限",
+        time_filter: "不限",
+        source: "explore_feed",
+        ai_mode: "0",
+      },
+    },
+    {
+      name: "app_v2_search_notes_minimal",
+      endpoint: TIKHUB_XHS_ENDPOINT,
+      params: {
+        keyword,
+        page: "1",
+      },
+    },
+    {
+      name: "web_v2_fetch_hot_list",
+      endpoint: "https://api.tikhub.io/api/v1/xiaohongshu/web_v2/fetch_hot_list",
+      params: {},
+    },
+  ];
+
+  const results = [];
+  for (const attempt of attempts) {
+    const url = new URL(attempt.endpoint);
+    Object.entries(attempt.params).forEach(([key, value]) => url.searchParams.set(key, value));
+
+    try {
+      const payload = await fetchJson(url.toString(), {
+        headers: {
+          authorization: `Bearer ${TIKHUB_API_KEY}`,
+        },
+      });
+      results.push({
+        name: attempt.name,
+        ok: true,
+        url: url.toString().replace(TIKHUB_API_KEY, "[redacted]"),
+        summary: summarizePayload(payload),
+      });
+    } catch (error) {
+      results.push({
+        name: attempt.name,
+        ok: false,
+        url: url.toString(),
+        error: error.message,
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    keyword,
+    endpoint: TIKHUB_XHS_ENDPOINT,
+    results,
+  };
 }
 
 async function fetchWechat() {
@@ -564,6 +651,11 @@ const server = http.createServer(async (request, response) => {
         "access-control-allow-headers": "content-type",
       });
       response.end();
+      return;
+    }
+
+    if (request.url.startsWith("/api/debug/xhs")) {
+      sendJson(response, 200, await debugXiaohongshu());
       return;
     }
 
