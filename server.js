@@ -9,7 +9,7 @@ const SNAPSHOT_FILE = path.join(ROOT, "data", "snapshots.json");
 const TIKHUB_API_KEY = process.env.TIKHUB_API_KEY || "";
 const TIKHUB_XHS_ENDPOINT =
   process.env.TIKHUB_XHS_ENDPOINT ||
-  "https://api.tikhub.io/api/v1/xiaohongshu/web_v2/fetch_search_notes";
+  "https://api.tikhub.io/api/v1/xiaohongshu/app_v2/search_notes";
 const XHS_KEYWORDS = (process.env.XHS_KEYWORDS || "影视,音乐,综艺,游戏,动漫")
   .split(",")
   .map((keyword) => keyword.trim())
@@ -181,6 +181,9 @@ function pickTitle(item) {
   return normalizeTitle(
     item.title ||
       noteCard.title ||
+      noteCard.display_title ||
+      noteCard.desc ||
+      item.display_title ||
       item.word ||
       item.keyword ||
       item.query ||
@@ -194,7 +197,7 @@ function pickTitle(item) {
 
 function pickUrl(item, platform, title) {
   const noteCard = item.note_card || item.noteCard || item.note || {};
-  const noteId = item.id || item.note_id || item.noteId || noteCard.id || noteCard.note_id;
+  const noteId = item.id || item.note_id || item.noteId || item.note?.note_id || noteCard.id || noteCard.note_id;
   if (platform === "小红书" && noteId) {
     return `https://www.xiaohongshu.com/explore/${noteId}`;
   }
@@ -212,7 +215,7 @@ function pickUrl(item, platform, title) {
 
 function pickHotValue(item, fallbackRank) {
   const noteCard = item.note_card || item.noteCard || item.note || {};
-  const interactInfo = item.interact_info || item.interactInfo || noteCard.interact_info || {};
+  const interactInfo = item.interact_info || item.interactInfo || noteCard.interact_info || noteCard.interactInfo || {};
   return parseHotValue(
     item.hot ||
       item.hotnum ||
@@ -228,7 +231,9 @@ function pickHotValue(item, fallbackRank) {
       item.liked_count ||
       interactInfo.liked_count ||
       interactInfo.likedCount ||
-      interactInfo.collected_count,
+      interactInfo.collected_count ||
+      interactInfo.comment_count ||
+      interactInfo.share_count,
     fallbackRank,
   );
 }
@@ -299,10 +304,13 @@ async function fetchXiaohongshu() {
   const results = await Promise.allSettled(
     XHS_KEYWORDS.map(async (keyword) => {
       const url = new URL(TIKHUB_XHS_ENDPOINT);
-      url.searchParams.set("keywords", keyword);
+      url.searchParams.set("keyword", keyword);
       url.searchParams.set("page", "1");
       url.searchParams.set("sort_type", "popularity_descending");
-      url.searchParams.set("note_type", "0");
+      url.searchParams.set("note_type", "不限");
+      url.searchParams.set("time_filter", "一周内");
+      url.searchParams.set("source", "explore_feed");
+      url.searchParams.set("ai_mode", "0");
       const data = await fetchJsonWithRetry(
         url.toString(),
         {
