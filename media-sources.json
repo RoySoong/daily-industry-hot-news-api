@@ -1,0 +1,18 @@
+[
+  { "name": "人民网", "level": "central" },
+  { "name": "新华网", "level": "central" },
+  { "name": "央视网", "level": "central" },
+  { "name": "环球网", "level": "central" },
+  { "name": "中国新闻网", "level": "central" },
+  { "name": "澎湃新闻", "level": "national" },
+  { "name": "南方+", "level": "regional" },
+  { "name": "腾讯新闻", "level": "portal" },
+  { "name": "网易新闻", "level": "portal" },
+  { "name": "搜狐新闻", "level": "portal" },
+  { "name": "新浪新闻", "level": "portal" },
+  { "name": "北京日报客户端", "level": "regional" },
+  { "name": "上观新闻", "level": "regional" },
+  { "name": "川观新闻", "level": "regional" },
+  { "name": "锦观新闻", "level": "regional" },
+  { "name": "红星新闻", "level": "regional" }
+]

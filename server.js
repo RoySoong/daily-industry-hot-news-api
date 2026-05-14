@@ -6,6 +6,7 @@ const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "0.0.0.0";
 const ROOT = __dirname;
 const SNAPSHOT_FILE = path.join(ROOT, "data", "snapshots.json");
+const MEDIA_SOURCES_FILE = path.join(ROOT, "media-sources.json");
 const TIKHUB_API_KEY = process.env.TIKHUB_API_KEY || "";
 const TIKHUB_XHS_ENDPOINT =
   process.env.TIKHUB_XHS_ENDPOINT ||
@@ -36,6 +37,7 @@ const USER_AGENTS = {
     "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
 };
 let hotCache = {};
+let mediaCache = {};
 const TIANAPI_KEY = process.env.TIANAPI_KEY || "";
 const TIANAPI_WECHAT_ENDPOINT =
   process.env.TIANAPI_WECHAT_ENDPOINT || "https://apis.tianapi.com/wxhottopic/index";
@@ -83,6 +85,14 @@ const industryRules = [
     keywords: ["游戏", "手游", "电竞", "动漫", "动画", "漫画", "IP", "二次元", "联动", "预约", "公测"],
   },
 ];
+
+const mediaIndustryKeywords = {
+  文化娱乐: ["文娱", "文化", "娱乐", "电影", "剧集"],
+  影视剧集: ["电影", "剧集", "电视剧", "短剧", "票房"],
+  音乐演出: ["音乐", "演唱会", "音乐节", "歌手", "巡演"],
+  综艺艺人: ["综艺", "艺人", "明星", "嘉宾", "红毯"],
+  游戏动漫: ["游戏", "动漫", "电竞", "手游", "IP"],
+};
 
 const fallbackSeeds = [
   "暑期档新片预售热度快速升温",
@@ -141,6 +151,11 @@ function detectClientProfile(request) {
 
 function normalizeTitle(title) {
   return String(title || "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
     .replace(/^#|#$/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -538,6 +553,14 @@ async function readPreviousSnapshot() {
   }
 }
 
+async function readMediaSources() {
+  try {
+    return JSON.parse(await fs.readFile(MEDIA_SOURCES_FILE, "utf8"));
+  } catch {
+    return [];
+  }
+}
+
 async function writeSnapshot(items) {
   const snapshot = {};
   items.forEach((item) => {
@@ -675,6 +698,136 @@ async function getHotItems(clientProfile = { type: "desktop", upstreamUserAgent:
   return payload;
 }
 
+function getMediaTitle(item) {
+  return normalizeTitle(
+    item.title ||
+      item.article_title ||
+      item.name ||
+      item.desc ||
+      item.content ||
+      item.text,
+  );
+}
+
+function getMediaUrl(item, title) {
+  return item.url || item.link || item.article_url || item.source_url || platformSearchUrls["公众号"](title);
+}
+
+function getPublishedAt(item) {
+  const value = item.publish_time || item.publishTime || item.create_time || item.time || item.timestamp;
+  if (!value) return Date.now();
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return Date.parse(value) || Date.now();
+  return numeric > 1000000000000 ? numeric : numeric * 1000;
+}
+
+function getMediaKeywords(industry) {
+  return mediaIndustryKeywords[industry] || mediaIndustryKeywords["文化娱乐"];
+}
+
+async function fetchMediaFeed(clientProfile, filters = {}) {
+  const industry = filters.industry || "文化娱乐";
+  const platform = filters.platform || "公众号";
+  const mediaName = filters.media || "";
+  const cacheKey = `${clientProfile.type}:${platform}:${industry}:${mediaName}`;
+  const cached = mediaCache[cacheKey];
+  if (cached && Date.now() - cached.cachedAt < HOT_CACHE_TTL_MS) {
+    return { ...cached.payload, cached: true };
+  }
+
+  if (platform !== "公众号") {
+    return {
+      updatedAt: new Date().toISOString(),
+      clientDevice: clientProfile.type,
+      platform,
+      industry,
+      live: false,
+      sources: [],
+      items: [],
+      message: "媒体监测 MVP 当前先支持公众号文章搜索；微博、小红书、抖音需要补充账号 ID 后接入。",
+    };
+  }
+
+  if (!TIKHUB_API_KEY) {
+    return {
+      updatedAt: new Date().toISOString(),
+      clientDevice: clientProfile.type,
+      platform,
+      industry,
+      live: false,
+      sources: [],
+      items: [],
+      message: "未配置 TIKHUB_API_KEY",
+    };
+  }
+
+  const mediaSources = (await readMediaSources()).filter((source) => !mediaName || source.name === mediaName);
+  const keywords = getMediaKeywords(industry).slice(0, 2);
+  const selectedMedia = mediaSources.slice(0, mediaName ? 1 : 16);
+
+  const requests = selectedMedia.flatMap((source) =>
+    keywords.map(async (keyword) => {
+      const url = new URL(TIKHUB_WECHAT_MP_ENDPOINT);
+      url.searchParams.set("keyword", `${source.name} ${keyword}`);
+      url.searchParams.set("offset", "0");
+      url.searchParams.set("sort_type", "_2");
+      const data = await fetchJsonWithRetry(
+        url.toString(),
+        {
+          headers: {
+            authorization: `Bearer ${TIKHUB_API_KEY}`,
+          },
+          userAgent: clientProfile.upstreamUserAgent,
+        },
+        2,
+      );
+
+      return getList(data)
+        .map((item, index) => {
+          const title = getMediaTitle(item);
+          const publishedAt = getPublishedAt(item);
+          return {
+            title,
+            platform: "公众号",
+            mediaName: source.name,
+            mediaLevel: source.level,
+            industry: detectIndustry(`${title} ${keyword}`),
+            publishedAt,
+            url: getMediaUrl(item, title),
+            matchReason: `搜索：${source.name} + ${keyword}`,
+            rank: index + 1,
+          };
+        })
+        .filter((item) => item.title);
+    }),
+  );
+
+  const settled = await Promise.allSettled(requests);
+  const items = settled
+    .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
+    .filter((item) => industry === "文化娱乐" || item.industry === industry || calcFit(item.title) > 0)
+    .sort((a, b) => b.publishedAt - a.publishedAt)
+    .filter((item, index, list) => list.findIndex((other) => other.title === item.title) === index)
+    .slice(0, 80);
+
+  const payload = {
+    updatedAt: new Date().toISOString(),
+    clientDevice: clientProfile.type,
+    platform,
+    industry,
+    live: items.length > 0,
+    sources: selectedMedia.map((source) => ({ name: source.name, level: source.level })),
+    items,
+  };
+
+  mediaCache[cacheKey] = {
+    cachedAt: Date.now(),
+    payload,
+  };
+
+  return payload;
+}
+
 async function serveStatic(request, response) {
   const url = new URL(request.url, `http://localhost:${PORT}`);
   const pathname = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
@@ -711,6 +864,20 @@ const server = http.createServer(async (request, response) => {
 
     if (request.url.startsWith("/api/hot")) {
       sendJson(response, 200, await getHotItems(detectClientProfile(request)));
+      return;
+    }
+
+    if (request.url.startsWith("/api/media-feed")) {
+      const url = new URL(request.url, `http://localhost:${PORT}`);
+      sendJson(
+        response,
+        200,
+        await fetchMediaFeed(detectClientProfile(request), {
+          platform: url.searchParams.get("platform") || "公众号",
+          industry: url.searchParams.get("industry") || "文化娱乐",
+          media: url.searchParams.get("media") || "",
+        }),
+      );
       return;
     }
     await serveStatic(request, response);
