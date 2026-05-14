@@ -14,14 +14,14 @@ const TIKHUB_XHS_ENDPOINT =
 const TIKHUB_XHS_HOT_ENDPOINT =
   process.env.TIKHUB_XHS_HOT_ENDPOINT ||
   "https://api.tikhub.io/api/v1/xiaohongshu/web_v2/fetch_hot_list";
-const XHS_KEYWORDS = (process.env.XHS_KEYWORDS || "影视,音乐,综艺,游戏,动漫")
+const XHS_KEYWORDS = (process.env.XHS_KEYWORDS || "艺术,博物馆,图书,音乐")
   .split(",")
   .map((keyword) => keyword.trim())
   .filter(Boolean);
 const TIKHUB_WECHAT_MP_ENDPOINT =
   process.env.TIKHUB_WECHAT_MP_ENDPOINT ||
   "https://api.tikhub.io/api/v1/wechat_mp/web/fetch_search_article";
-const WECHAT_MP_KEYWORDS = (process.env.WECHAT_MP_KEYWORDS || "影视,音乐,综艺,游戏,动漫")
+const WECHAT_MP_KEYWORDS = (process.env.WECHAT_MP_KEYWORDS || "艺术,博物馆,图书,音乐")
   .split(",")
   .map((keyword) => keyword.trim())
   .filter(Boolean);
@@ -51,8 +51,19 @@ const platformSearchUrls = {
 
 const industryRules = [
   {
-    name: "影视剧集",
+    name: "艺术",
     keywords: [
+      "艺术",
+      "美术",
+      "展览",
+      "展演",
+      "戏剧",
+      "舞台剧",
+      "话剧",
+      "戏曲",
+      "舞蹈",
+      "影展",
+      "电影节",
       "电影",
       "影院",
       "院线",
@@ -70,28 +81,56 @@ const industryRules = [
       "上映",
       "首映",
       "大结局",
+      "综艺",
+      "艺人",
+      "明星",
+      "嘉宾",
+      "游戏",
+      "动漫",
+      "动画",
+    ],
+  },
+  {
+    name: "文化",
+    keywords: [
+      "博物馆",
+      "文博",
+      "文物",
+      "考古",
+      "展陈",
+      "馆藏",
+      "策展",
+      "展品",
+      "非遗",
+      "遗址",
+      "古籍",
+      "艺术馆",
+      "美术馆",
+      "图书",
+      "出版",
+      "阅读",
+      "文学",
+      "作家",
+      "新书",
+      "书店",
+      "书展",
+      "书籍",
+      "小说",
+      "绘本",
+      "书单",
+      "版权",
     ],
   },
   {
     name: "音乐演出",
     keywords: ["音乐", "歌手", "演唱会", "巡演", "专辑", "新歌", "舞台", "音乐节", "乐队", "票务", "开票"],
   },
-  {
-    name: "综艺艺人",
-    keywords: ["综艺", "艺人", "明星", "嘉宾", "偶像", "路透", "粉丝", "直播", "红毯", "颁奖", "代言"],
-  },
-  {
-    name: "游戏动漫",
-    keywords: ["游戏", "手游", "电竞", "动漫", "动画", "漫画", "IP", "二次元", "联动", "预约", "公测"],
-  },
 ];
 
 const mediaIndustryKeywords = {
-  文化娱乐: ["文娱", "文化", "娱乐", "电影", "剧集"],
-  影视剧集: ["电影", "剧集", "电视剧", "短剧", "票房"],
+  艺术: ["艺术", "美术", "展览", "戏剧", "电影"],
+  文化: ["博物馆", "图书"],
   音乐演出: ["音乐", "演唱会", "音乐节", "歌手", "巡演"],
-  综艺艺人: ["综艺", "艺人", "明星", "嘉宾", "红毯"],
-  游戏动漫: ["游戏", "动漫", "电竞", "手游", "IP"],
 };
 
 const defaultMediaSources = [
@@ -191,6 +230,15 @@ function parseHotValue(value, rank = 50) {
 }
 
 function detectIndustry(title) {
+  if (
+    /博物馆|文博|文物|考古|展陈|馆藏|策展|展品|非遗|遗址|美术馆|艺术馆|图书|出版|阅读|文学|作家|新书|书店|书展|书籍|小说|绘本|书单|版权/.test(
+      title,
+    )
+  ) {
+    return "文化";
+  }
+  if (/音乐|歌手|演唱会|巡演|专辑|新歌|舞台|音乐节|乐队|票务|开票/.test(title)) return "音乐演出";
+
   const hits = industryRules
     .map((rule) => ({
       name: rule.name,
@@ -199,7 +247,7 @@ function detectIndustry(title) {
     .filter((item) => item.count > 0)
     .sort((a, b) => b.count - a.count);
 
-  return hits[0]?.name || "文化娱乐";
+  return hits[0]?.name || "艺术";
 }
 
 function calcFit(title) {
@@ -212,7 +260,7 @@ function calcFit(title) {
 
 function buildReason(item) {
   const sourceText = item.platforms.join("、");
-  const fitText = item.fit >= 70 ? "行业匹配度较高" : "命中文娱相关词，需继续观察";
+  const fitText = item.fit >= 70 ? "行业匹配度较高" : "命中艺术文化相关词，需继续观察";
   return `${sourceText}出现相关热度信号，${fitText}；当前按平台覆盖、热度值、上升速度和新鲜度综合推荐。`;
 }
 
@@ -742,11 +790,11 @@ function getPublishedAt(item) {
 }
 
 function getMediaKeywords(industry) {
-  return mediaIndustryKeywords[industry] || mediaIndustryKeywords["文化娱乐"];
+  return mediaIndustryKeywords[industry] || mediaIndustryKeywords["艺术"];
 }
 
 async function fetchMediaFeed(clientProfile, filters = {}) {
-  const industry = filters.industry || "文化娱乐";
+  const industry = filters.industry || "艺术";
   const platform = filters.platform || "公众号";
   const mediaName = filters.media || "";
   const cacheKey = `${clientProfile.type}:${platform}:${industry}:${mediaName}`;
@@ -782,7 +830,7 @@ async function fetchMediaFeed(clientProfile, filters = {}) {
   }
 
   const mediaSources = (await readMediaSources()).filter((source) => !mediaName || source.name === mediaName);
-  const keywords = getMediaKeywords(industry).slice(0, 1);
+  const keywords = getMediaKeywords(industry).slice(0, industry === "文化" ? 2 : 1);
   const selectedMedia = mediaSources.slice(0, mediaName ? 1 : 8);
 
   const requests = selectedMedia.flatMap((source) =>
@@ -825,7 +873,7 @@ async function fetchMediaFeed(clientProfile, filters = {}) {
   const settled = await Promise.allSettled(requests);
   const items = settled
     .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
-    .filter((item) => industry === "文化娱乐" || item.industry === industry || calcFit(item.title) > 0)
+    .filter((item) => item.industry === industry || calcFit(item.title) > 0)
     .sort((a, b) => b.publishedAt - a.publishedAt)
     .filter((item, index, list) => list.findIndex((other) => other.title === item.title) === index)
     .slice(0, 80);
@@ -897,7 +945,7 @@ const server = http.createServer(async (request, response) => {
         200,
         await fetchMediaFeed(detectClientProfile(request), {
           platform: url.searchParams.get("platform") || "公众号",
-          industry: url.searchParams.get("industry") || "文化娱乐",
+          industry: url.searchParams.get("industry") || "艺术",
           media: url.searchParams.get("media") || "",
         }),
       );
