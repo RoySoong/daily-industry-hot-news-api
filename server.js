@@ -94,6 +94,25 @@ const mediaIndustryKeywords = {
   游戏动漫: ["游戏", "动漫", "电竞", "手游", "IP"],
 };
 
+const defaultMediaSources = [
+  { name: "人民网", level: "central" },
+  { name: "新华网", level: "central" },
+  { name: "央视网", level: "central" },
+  { name: "环球网", level: "central" },
+  { name: "中国新闻网", level: "central" },
+  { name: "澎湃新闻", level: "national" },
+  { name: "南方+", level: "regional" },
+  { name: "腾讯新闻", level: "portal" },
+  { name: "网易新闻", level: "portal" },
+  { name: "搜狐新闻", level: "portal" },
+  { name: "新浪新闻", level: "portal" },
+  { name: "北京日报客户端", level: "regional" },
+  { name: "上观新闻", level: "regional" },
+  { name: "川观新闻", level: "regional" },
+  { name: "锦观新闻", level: "regional" },
+  { name: "红星新闻", level: "regional" },
+];
+
 const fallbackSeeds = [
   "暑期档新片预售热度快速升温",
   "热门剧集大结局带动角色话题霸榜",
@@ -555,9 +574,10 @@ async function readPreviousSnapshot() {
 
 async function readMediaSources() {
   try {
-    return JSON.parse(await fs.readFile(MEDIA_SOURCES_FILE, "utf8"));
+    const sources = JSON.parse(await fs.readFile(MEDIA_SOURCES_FILE, "utf8"));
+    return Array.isArray(sources) && sources.length ? sources : defaultMediaSources;
   } catch {
-    return [];
+    return defaultMediaSources;
   }
 }
 
@@ -762,8 +782,8 @@ async function fetchMediaFeed(clientProfile, filters = {}) {
   }
 
   const mediaSources = (await readMediaSources()).filter((source) => !mediaName || source.name === mediaName);
-  const keywords = getMediaKeywords(industry).slice(0, 2);
-  const selectedMedia = mediaSources.slice(0, mediaName ? 1 : 16);
+  const keywords = getMediaKeywords(industry).slice(0, 1);
+  const selectedMedia = mediaSources.slice(0, mediaName ? 1 : 8);
 
   const requests = selectedMedia.flatMap((source) =>
     keywords.map(async (keyword) => {
@@ -818,6 +838,9 @@ async function fetchMediaFeed(clientProfile, filters = {}) {
     live: items.length > 0,
     sources: selectedMedia.map((source) => ({ name: source.name, level: source.level })),
     items,
+    message: items.length
+      ? ""
+      : "暂未从媒体搜索接口匹配到内容，可切换行业或稍后重试。默认先监测前 8 家媒体以避免接口超时。",
   };
 
   mediaCache[cacheKey] = {
