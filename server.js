@@ -832,11 +832,86 @@ function getMediaUrl(item, title) {
   return item.url || item.link || item.article_url || item.source_url || platformSearchUrls["公众号"](title);
 }
 
+function pickFirstText(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return normalizeTitle(value);
+    if (value && typeof value === "object") {
+      const nested = pickFirstText(
+        value.name,
+        value.nickname,
+        value.title,
+        value.account_name,
+        value.author_name,
+        value.source_name,
+        value.media_name,
+      );
+      if (nested) return nested;
+    }
+  }
+  return "";
+}
+
+function getMediaAccountName(item) {
+  return pickFirstText(
+    item.account_name,
+    item.accountName,
+    item.official_account_name,
+    item.officialAccountName,
+    item.wechat_name,
+    item.wechatName,
+    item.wx_name,
+    item.wxName,
+    item.mp_name,
+    item.mpName,
+    item.media_name,
+    item.mediaName,
+    item.source_name,
+    item.sourceName,
+    item.publisher_name,
+    item.publisherName,
+    item.author_name,
+    item.authorName,
+    item.sourcename,
+    item.source,
+    item.media,
+    item.publisher,
+    item.account,
+    item.author,
+    item.user,
+    item.profile,
+    item.wechat,
+  );
+}
+
+function normalizeMediaName(name) {
+  return normalizeTitle(name).replace(/\s+/g, "").replace(/微信公众号|公众号|新闻客户端|客户端$/g, "");
+}
+
+function matchMediaSource(accountName, sources) {
+  const normalizedAccount = normalizeMediaName(accountName);
+  if (!normalizedAccount) return null;
+  return sources.find((source) => {
+    const normalizedSource = normalizeMediaName(source.name);
+    return normalizedAccount === normalizedSource || normalizedAccount.includes(normalizedSource);
+  });
+}
+
+function isTodayInShanghai(timestamp) {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return false;
+  const formatter = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return formatter.format(new Date(timestamp)) === formatter.format(new Date());
+}
+
 function getPublishedAt(item) {
   const value = item.publish_time || item.publishTime || item.create_time || item.time || item.timestamp;
-  if (!value) return Date.now();
+  if (!value) return 0;
   const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return Date.parse(value) || Date.now();
+  if (!Number.isFinite(numeric)) return Date.parse(value) || 0;
   return numeric > 1000000000000 ? numeric : numeric * 1000;
 }
 
@@ -884,10 +959,9 @@ async function fetchMediaFeed(clientProfile, filters = {}) {
   const keywords = getMediaKeywords(industry).slice(0, 3);
   const selectedMedia = mediaSources.slice(0, mediaName ? 1 : 8);
 
-  const requests = selectedMedia.flatMap((source) =>
-    keywords.map(async (keyword) => {
+  const requests = keywords.map(async (keyword) => {
       const url = new URL(TIKHUB_WECHAT_MP_ENDPOINT);
-      url.searchParams.set("keyword", `${source.name} ${keyword}`);
+      url.searchParams.set("keyword", keyword);
       url.searchParams.set("offset", "0");
       url.searchParams.set("sort_type", "_2");
       const data = await fetchJsonWithRetry(
@@ -905,21 +979,26 @@ async function fetchMediaFeed(clientProfile, filters = {}) {
         .map((item, index) => {
           const title = getMediaTitle(item);
           const publishedAt = getPublishedAt(item);
+          const accountName = getMediaAccountName(item);
+          const matchedSource = matchMediaSource(accountName, selectedMedia);
           return {
             title,
             platform: "公众号",
-            mediaName: source.name,
-            mediaLevel: source.level,
+            mediaName: matchedSource?.name || accountName,
+            mediaLevel: matchedSource?.level || "",
             industry: detectIndustry(`${title} ${keyword}`),
             publishedAt,
             url: getMediaUrl(item, title),
-            matchReason: `搜索：${source.name} + ${keyword}`,
+            matched: Boolean(matchedSource),
+            accountName,
+            matchReason: matchedSource
+              ? `账号：${matchedSource.name}；关键词：${keyword}；今日发布`
+              : `非目标媒体账号：${accountName || "未知"}`,
             rank: index + 1,
           };
         })
-        .filter((item) => item.title);
-    }),
-  );
+        .filter((item) => item.title && item.matched && isTodayInShanghai(item.publishedAt));
+    });
 
   const settled = await Promise.allSettled(requests);
   const items = settled
@@ -939,7 +1018,7 @@ async function fetchMediaFeed(clientProfile, filters = {}) {
     items,
     message: items.length
       ? ""
-      : "暂未从媒体搜索接口匹配到内容，可切换行业或稍后重试。默认先监测前 8 家媒体以避免接口超时。",
+      : "暂未匹配到目标媒体公众号今日发布的相关内容。当前只保留媒体名单内账号，且限定为当天发布。",
   };
 
   mediaCache[cacheKey] = {
