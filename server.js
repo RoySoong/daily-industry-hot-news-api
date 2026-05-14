@@ -14,14 +14,14 @@ const TIKHUB_XHS_ENDPOINT =
 const TIKHUB_XHS_HOT_ENDPOINT =
   process.env.TIKHUB_XHS_HOT_ENDPOINT ||
   "https://api.tikhub.io/api/v1/xiaohongshu/web_v2/fetch_hot_list";
-const XHS_KEYWORDS = (process.env.XHS_KEYWORDS || "艺术,博物馆,图书,音乐")
+const XHS_KEYWORDS = (process.env.XHS_KEYWORDS || "艺术,展览,美术,文化,博物馆,图书,阅读,音乐,演出,演唱会")
   .split(",")
   .map((keyword) => keyword.trim())
   .filter(Boolean);
 const TIKHUB_WECHAT_MP_ENDPOINT =
   process.env.TIKHUB_WECHAT_MP_ENDPOINT ||
   "https://api.tikhub.io/api/v1/wechat_mp/web/fetch_search_article";
-const WECHAT_MP_KEYWORDS = (process.env.WECHAT_MP_KEYWORDS || "艺术,博物馆,图书,音乐")
+const WECHAT_MP_KEYWORDS = (process.env.WECHAT_MP_KEYWORDS || "艺术,展览,美术,文化,博物馆,图书,阅读,音乐,演出,演唱会")
   .split(",")
   .map((keyword) => keyword.trim())
   .filter(Boolean);
@@ -55,6 +55,18 @@ const industryRules = [
     keywords: [
       "艺术",
       "美术",
+      "美学",
+      "画展",
+      "画廊",
+      "书画",
+      "绘画",
+      "雕塑",
+      "装置",
+      "影像艺术",
+      "艺术家",
+      "艺术节",
+      "双年展",
+      "文艺",
       "展览",
       "展演",
       "戏剧",
@@ -97,6 +109,14 @@ const industryRules = [
       "文博",
       "文物",
       "考古",
+      "文化",
+      "文旅",
+      "公共文化",
+      "文化遗产",
+      "历史",
+      "人文",
+      "民俗",
+      "民间艺术",
       "展陈",
       "馆藏",
       "策展",
@@ -109,8 +129,16 @@ const industryRules = [
       "图书",
       "出版",
       "阅读",
+      "读书",
+      "全民阅读",
+      "荐书",
+      "好书",
+      "书评",
+      "书香",
+      "图书馆",
       "文学",
       "作家",
+      "作者",
       "新书",
       "书店",
       "书展",
@@ -123,14 +151,37 @@ const industryRules = [
   },
   {
     name: "音乐演出",
-    keywords: ["音乐", "歌手", "演唱会", "巡演", "专辑", "新歌", "舞台", "音乐节", "乐队", "票务", "开票"],
+    keywords: [
+      "音乐",
+      "演出",
+      "演艺",
+      "歌手",
+      "演唱会",
+      "巡演",
+      "专辑",
+      "新歌",
+      "舞台",
+      "音乐节",
+      "乐队",
+      "票务",
+      "开票",
+      "音乐会",
+      "交响乐",
+      "民乐",
+      "音乐剧",
+      "live",
+      "Live",
+      "现场",
+      "巡回",
+      "开唱",
+    ],
   },
 ];
 
 const mediaIndustryKeywords = {
-  艺术: ["艺术", "美术", "展览", "戏剧", "电影"],
-  文化: ["博物馆", "图书"],
-  音乐演出: ["音乐", "演唱会", "音乐节", "歌手", "巡演"],
+  艺术: ["艺术", "展览", "美术", "戏剧", "文艺", "电影"],
+  文化: ["文化", "博物馆", "图书", "阅读", "文旅", "非遗"],
+  音乐演出: ["音乐", "演出", "演唱会", "音乐节", "歌手", "巡演"],
 };
 
 const defaultMediaSources = [
@@ -231,13 +282,13 @@ function parseHotValue(value, rank = 50) {
 
 function detectIndustry(title) {
   if (
-    /博物馆|文博|文物|考古|展陈|馆藏|策展|展品|非遗|遗址|美术馆|艺术馆|图书|出版|阅读|文学|作家|新书|书店|书展|书籍|小说|绘本|书单|版权/.test(
+    /博物馆|文博|文物|考古|文化|文旅|公共文化|文化遗产|历史|人文|民俗|民间艺术|展陈|馆藏|策展|展品|非遗|遗址|美术馆|艺术馆|图书|出版|阅读|读书|全民阅读|荐书|好书|书评|书香|图书馆|文学|作家|作者|新书|书店|书展|书籍|小说|绘本|书单|版权/.test(
       title,
     )
   ) {
     return "文化";
   }
-  if (/音乐|歌手|演唱会|巡演|专辑|新歌|舞台|音乐节|乐队|票务|开票/.test(title)) return "音乐演出";
+  if (/音乐|演出|演艺|歌手|演唱会|巡演|专辑|新歌|舞台|音乐节|乐队|票务|开票|音乐会|交响乐|民乐|音乐剧|live|Live|现场|巡回|开唱/.test(title)) return "音乐演出";
 
   const hits = industryRules
     .map((rule) => ({
@@ -830,7 +881,7 @@ async function fetchMediaFeed(clientProfile, filters = {}) {
   }
 
   const mediaSources = (await readMediaSources()).filter((source) => !mediaName || source.name === mediaName);
-  const keywords = getMediaKeywords(industry).slice(0, industry === "文化" ? 2 : 1);
+  const keywords = getMediaKeywords(industry).slice(0, 3);
   const selectedMedia = mediaSources.slice(0, mediaName ? 1 : 8);
 
   const requests = selectedMedia.flatMap((source) =>
