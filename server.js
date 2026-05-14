@@ -21,6 +21,8 @@ const XHS_KEYWORDS = (process.env.XHS_KEYWORDS || "艺术,展览,美术,文化,�
 const TIKHUB_WECHAT_MP_ENDPOINT =
   process.env.TIKHUB_WECHAT_MP_ENDPOINT ||
   "https://api.tikhub.io/api/v1/wechat_mp/web/fetch_search_article";
+const TOUTIAO_HOT_ENDPOINT =
+  process.env.TOUTIAO_HOT_ENDPOINT || "https://api.vvhan.com/api/hotlist/toutiao";
 const WECHAT_MP_KEYWORDS = (process.env.WECHAT_MP_KEYWORDS || "艺术,展览,美术,文化,博物馆,图书,阅读,音乐,演出,演唱会")
   .split(",")
   .map((keyword) => keyword.trim())
@@ -47,6 +49,7 @@ const platformSearchUrls = {
   公众号: (title) => `https://weixin.sogou.com/weixin?type=2&query=${encodeURIComponent(title)}`,
   小红书: (title) => `https://www.xiaohongshu.com/search_result?keyword=${encodeURIComponent(title)}`,
   抖音: (title) => `https://www.douyin.com/search/${encodeURIComponent(title)}`,
+  今日头条: (title) => `https://so.toutiao.com/search?keyword=${encodeURIComponent(title)}`,
 };
 
 const industryRules = [
@@ -526,6 +529,37 @@ async function fetchDouyin(clientProfile = {}) {
   });
 }
 
+async function fetchToutiao(clientProfile = {}) {
+  const data = await fetchJsonWithRetry(
+    TOUTIAO_HOT_ENDPOINT,
+    {
+      headers: TOUTIAO_HOT_ENDPOINT.includes("tikhub.io") && TIKHUB_API_KEY
+        ? { authorization: `Bearer ${TIKHUB_API_KEY}` }
+        : {},
+      userAgent: clientProfile.upstreamUserAgent,
+    },
+    2,
+  );
+
+  return getList(data)
+    .map((item, index) => {
+      const title = pickTitle(item);
+      return {
+        title,
+        platform: "今日头条",
+        rank: Number(item.rank || item.index || item.position || item.order || index + 1),
+        interactions: pickHotValue(item, index + 1),
+        url: pickUrl(item, "今日头条", title),
+        fetchedAt: item.event_time
+          ? Number(item.event_time) * 1000
+          : item.timestamp
+            ? Number(item.timestamp) * 1000
+            : Date.now(),
+      };
+    })
+    .filter((item) => item.title);
+}
+
 async function fetchXiaohongshu(clientProfile = {}) {
   if (!TIKHUB_API_KEY) {
     throw new Error("未配置 TIKHUB_API_KEY");
@@ -785,6 +819,7 @@ async function getHotItems(clientProfile = { type: "desktop", upstreamUserAgent:
   const sourceFetchers = [
     ["微博", fetchWeibo],
     ["抖音", fetchDouyin],
+    ["今日头条", fetchToutiao],
     ["小红书", fetchXiaohongshu],
     ["公众号", fetchWechat],
   ];
