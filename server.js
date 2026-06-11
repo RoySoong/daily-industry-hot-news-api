@@ -790,6 +790,10 @@ async function searchHotItems(clientProfile, filters = {}) {
   const rawItems = settled.flatMap((result) => (result.status === "fulfilled" ? result.value.items : []));
   const mergedItems = mergeKeywordSearchItems(rawItems, keyword, selectedPlatforms);
   const items = mergedItems.map(compactItem);
+  const sourceErrors = sources.filter((source) => source.error).map((source) => `${source.platform}：${source.error}`);
+  const emptyMessage = sourceErrors.length
+    ? `关键词搜索接口返回异常：${sourceErrors.join("；")}`
+    : `没有搜到“${keyword}”的相关结果，可以换个词，或尝试这些扩展词：${expandedKeywords.join("、")}`;
 
   const payload = {
     updatedAt: new Date().toISOString(),
@@ -800,7 +804,7 @@ async function searchHotItems(clientProfile, filters = {}) {
     query: keyword,
     expandedKeywords,
     mode: "search",
-    message: items.length ? "" : `没有搜到“${keyword}”的相关结果，可以换个词，或尝试这些扩展词：${expandedKeywords.join("、")}`,
+    message: items.length ? "" : emptyMessage,
   };
 
   hotCache[cacheKey] = {
@@ -988,7 +992,26 @@ async function postRedfox(endpoint, body, clientProfile) {
       userAgent: clientProfile.upstreamUserAgent,
     },
     2,
-  );
+  ).then((payload) => {
+    const code = payload?.code;
+    const success = payload?.success;
+    const message =
+      payload?.msg ||
+      payload?.message ||
+      payload?.error ||
+      payload?.data?.msg ||
+      "";
+
+    const explicitFailure =
+      success === false ||
+      (code !== undefined && code !== null && ![0, 200, 2000, "0", "200", "2000"].includes(code));
+
+    if (explicitFailure) {
+      throw new Error(message || `Redfox 接口返回异常 code=${code}`);
+    }
+
+    return payload;
+  });
 }
 
 async function fetchRedfoxAccountSearch(platform, accountName, clientProfile) {
