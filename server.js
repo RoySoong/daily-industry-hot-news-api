@@ -1,4 +1,4 @@
-const http = require("node:http");
+﻿const http = require("node:http");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 
@@ -253,38 +253,18 @@ function parseHotValue(value, rank = 50) {
 }
 
 function detectIndustry(title) {
-  if (
-    /博物馆|文博|文物|考古|文化|文旅|公共文化|文化遗产|历史|人文|民俗|民间艺术|展陈|馆藏|策展|展品|非遗|遗址|美术馆|艺术馆|图书|出版|阅读|读书|全民阅读|荐书|好书|书评|书香|图书馆|文学|作家|作者|新书|书店|书展|书籍|小说|绘本|书单|版权/.test(
-      title,
-    )
-  ) {
-    return "文化";
-  }
-  if (/音乐|演出|演艺|歌手|演唱会|巡演|专辑|新歌|舞台|音乐节|乐队|票务|开票|音乐会|交响乐|民乐|音乐剧|live|Live|现场|巡回|开唱/.test(title)) return "音乐演出";
-
-  const hits = industryRules
-    .map((rule) => ({
-      name: rule.name,
-      count: rule.keywords.filter((keyword) => title.includes(keyword)).length,
-    }))
-    .filter((item) => item.count > 0)
-    .sort((a, b) => b.count - a.count);
-
-  return hits[0]?.name || "艺术";
+  void title;
+  return "全行业";
 }
 
 function calcFit(title) {
-  const totalHits = industryRules.reduce(
-    (sum, rule) => sum + rule.keywords.filter((keyword) => title.includes(keyword)).length,
-    0,
-  );
-  return Math.min(100, totalHits * 26);
+  void title;
+  return 100;
 }
 
 function buildReason(item) {
   const sourceText = item.platforms.join("、");
-  const fitText = item.fit >= 70 ? "行业匹配度较高" : "命中艺术文化相关词，需继续观察";
-  return `${sourceText}出现相关热度信号，${fitText}；当前按平台覆盖、热度值、上升速度和新鲜度综合推荐。`;
+  return `${sourceText}出现相关热度信号，当前按平台覆盖、热度值、上升速度和新鲜度综合推荐。`;
 }
 
 function calcScore(item) {
@@ -598,7 +578,7 @@ function mergeItems(rawItems, previousSnapshot) {
       const withSignals = { ...item, rise, freshness: Math.min(100, freshness), fit };
       return { ...withSignals, score: calcScore(withSignals), reason: buildReason(withSignals) };
     })
-    .filter((item) => item.fit > 0)
+    
     .sort((a, b) => b.score - a.score);
 }
 
@@ -621,7 +601,7 @@ function compactItem(item) {
 
 function buildKeywordReason(item, keyword) {
   const sourceText = item.platforms.join("、");
-  return `${sourceText} 搜索到关键词“${keyword}”相关内容，已按平台覆盖、热度信号和时间新鲜度综合排序。`;
+  return `${sourceText}检索到“${keyword}”相关内容，当前按平台覆盖、热度值、上升速度和新鲜度综合排序。`;
 }
 
 function getKeywordSearchTime(item, platform) {
@@ -725,6 +705,22 @@ function mergeKeywordSearchItems(rawItems, keyword, selectedPlatforms) {
     .sort((a, b) => b.score - a.score);
 }
 
+function expandKeywordVariants(keyword) {
+  const normalized = normalizeTitle(keyword);
+  const variantMap = {
+    "房产": ["房产", "房地产", "楼市", "房价", "新房", "二手房", "买房"],
+    "楼市": ["楼市", "房产", "房地产", "房价", "新房", "二手房"],
+    "房地产": ["房地产", "房产", "楼市", "房价", "新房", "二手房"],
+    "汽车": ["汽车", "车市", "新车", "新能源车", "燃油车"],
+    "教育": ["教育", "高考", "考研", "留学", "学校"],
+    "医疗": ["医疗", "医院", "医生", "门诊", "健康"],
+    "金融": ["金融", "基金", "股票", "银行", "理财"],
+    "旅游": ["旅游", "文旅", "景区", "出游", "酒店"],
+  };
+
+  const variants = variantMap[normalized] || [normalized];
+  return [...new Set(variants.filter(Boolean))];
+}
 async function searchHotItems(clientProfile, filters = {}) {
   const keyword = normalizeTitle(filters.keyword || "");
   const selectedPlatforms = String(filters.platforms || "抖音,小红书,公众号")
@@ -745,7 +741,7 @@ async function searchHotItems(clientProfile, filters = {}) {
       items: [],
       query: keyword,
       mode: "search",
-      message: "请选择至少一个平台后再查询。",
+      message: "请至少选择一个平台后再查询。",
     };
   }
 
@@ -758,26 +754,40 @@ async function searchHotItems(clientProfile, filters = {}) {
       items: [],
       query: keyword,
       mode: "search",
-      message: "未配置 REDFOX_API_KEY，暂时无法进行关键词实时搜索。",
+      message: "未配置 REDFOX_API_KEY，暂时无法进行实时关键词搜索。",
     };
   }
 
-  const cacheKey = `search:${clientProfile.type}:${keyword}:${selectedPlatforms.join("|")}`;
+  const expandedKeywords = expandKeywordVariants(keyword);
+  const cacheKey = `search:${clientProfile.type}:${expandedKeywords.join("|")}:${selectedPlatforms.join("|")}`;
   const cached = hotCache[cacheKey];
   if (cached && Date.now() - cached.cachedAt < HOT_CACHE_TTL_MS) {
     return { ...cached.payload, cached: true };
   }
 
   const settled = await Promise.allSettled(
-    selectedPlatforms.map((platform) => fetchRedfoxKeywordPlatformItems(platform, keyword, clientProfile)),
+    selectedPlatforms.map(async (platform) => {
+      const keywordSettled = await Promise.allSettled(
+        expandedKeywords.map((variant) => fetchRedfoxKeywordPlatformItems(platform, variant, clientProfile)),
+      );
+      const items = keywordSettled.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+      const firstError = keywordSettled.find((result) => result.status === "rejected");
+      return {
+        platform,
+        items,
+        error: firstError && firstError.status === "rejected" ? firstError.reason?.message || "接口请求失败" : "",
+      };
+    }),
   );
+
   const sources = settled.map((result, index) => ({
     platform: selectedPlatforms[index],
     ok: result.status === "fulfilled",
-    error: result.status === "rejected" ? result.reason?.message || "接口请求失败" : "",
-    count: result.status === "fulfilled" ? result.value.length : 0,
+    error: result.status === "fulfilled" ? result.value.error : result.reason?.message || "接口请求失败",
+    count: result.status === "fulfilled" ? result.value.items.length : 0,
   }));
-  const rawItems = settled.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+
+  const rawItems = settled.flatMap((result) => (result.status === "fulfilled" ? result.value.items : []));
   const mergedItems = mergeKeywordSearchItems(rawItems, keyword, selectedPlatforms);
   const items = mergedItems.map(compactItem);
 
@@ -788,8 +798,9 @@ async function searchHotItems(clientProfile, filters = {}) {
     sources,
     items,
     query: keyword,
+    expandedKeywords,
     mode: "search",
-    message: items.length ? "" : `没有搜到“${keyword}”的相关结果，可以换个词或换个平台试试。`,
+    message: items.length ? "" : `没有搜到“${keyword}”的相关结果，可以换个词，或尝试这些扩展词：${expandedKeywords.join("、")}`,
   };
 
   hotCache[cacheKey] = {
@@ -1198,3 +1209,4 @@ const server = http.createServer(async (request, response) => {
 server.listen(PORT, HOST, () => {
   console.log(`每日行业热讯已启动：http://${HOST}:${PORT}`);
 });
+
