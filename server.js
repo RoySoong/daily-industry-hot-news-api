@@ -6,28 +6,14 @@ const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "0.0.0.0";
 const ROOT = __dirname;
 const SNAPSHOT_FILE = path.join(ROOT, "data", "snapshots.json");
-const MEDIA_SOURCES_FILE = path.join(ROOT, "media-sources.json");
-const TIKHUB_API_KEY = process.env.TIKHUB_API_KEY || "";
-const TIKHUB_XHS_ENDPOINT =
-  process.env.TIKHUB_XHS_ENDPOINT ||
-  "https://api.tikhub.io/api/v1/xiaohongshu/app_v2/search_notes";
-const TIKHUB_XHS_HOT_ENDPOINT =
-  process.env.TIKHUB_XHS_HOT_ENDPOINT ||
-  "https://api.tikhub.io/api/v1/xiaohongshu/web_v2/fetch_hot_list";
-const XHS_KEYWORDS = (process.env.XHS_KEYWORDS || "艺术,展览,美术,文化,博物馆,图书,阅读,音乐,演出,演唱会")
+const TOUTIAO_HOT_ENDPOINTS = (
+  process.env.TOUTIAO_HOT_ENDPOINTS ||
+  process.env.TOUTIAO_HOT_ENDPOINT ||
+  "https://api.vvhan.com/api/hotlist/toutiao,https://api.52vmy.cn/api/wl/hot?type=toutiao,https://api.cenguigui.cn/api/hotlist.php?type=toutiao"
+)
   .split(",")
-  .map((keyword) => keyword.trim())
+  .map((endpoint) => endpoint.trim())
   .filter(Boolean);
-const TIKHUB_WECHAT_MP_ENDPOINT =
-  process.env.TIKHUB_WECHAT_MP_ENDPOINT ||
-  "https://api.tikhub.io/api/v1/wechat_mp/web/fetch_search_article";
-const TOUTIAO_HOT_ENDPOINT =
-  process.env.TOUTIAO_HOT_ENDPOINT || "https://api.vvhan.com/api/hotlist/toutiao";
-const WECHAT_MP_KEYWORDS = (process.env.WECHAT_MP_KEYWORDS || "艺术,展览,美术,文化,博物馆,图书,阅读,音乐,演出,演唱会")
-  .split(",")
-  .map((keyword) => keyword.trim())
-  .filter(Boolean);
-const WECHAT_MP_SORT_TYPE = process.env.WECHAT_MP_SORT_TYPE || "_0";
 const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS || 9000);
 const HOT_CACHE_TTL_MS = Number(process.env.HOT_CACHE_TTL_MS || 180000);
 const USER_AGENTS = {
@@ -40,9 +26,16 @@ const USER_AGENTS = {
 };
 let hotCache = {};
 let mediaCache = {};
-const TIANAPI_KEY = process.env.TIANAPI_KEY || "";
-const TIANAPI_WECHAT_ENDPOINT =
-  process.env.TIANAPI_WECHAT_ENDPOINT || "https://apis.tianapi.com/wxhottopic/index";
+const REDFOX_API_KEY = process.env.REDFOX_API_KEY || "";
+const REDFOX_BASE_URL = process.env.REDFOX_BASE_URL || "https://redfox.hk";
+const REDFOX_ENDPOINTS = {
+  douyinSearchUser: "/story/api/dyData/searchUser",
+  douyinSearchArticle: "/story/api/dyData/searchArticle",
+  xhsSearchUser: "/story/api/xhsUser/searchUser",
+  xhsSearchArticle: "/story/api/xhsUser/searchArticle",
+  gzhSearchUser: "/story/api/gzhData/searchUser",
+  gzhWorkList: "/story/api/gzhData/queryWorkList",
+};
 
 const platformSearchUrls = {
   微博: (title) => `https://s.weibo.com/weibo?q=${encodeURIComponent(title)}`,
@@ -179,31 +172,6 @@ const industryRules = [
       "开唱",
     ],
   },
-];
-
-const mediaIndustryKeywords = {
-  艺术: ["艺术", "展览", "美术", "戏剧", "文艺", "电影"],
-  文化: ["文化", "博物馆", "图书", "阅读", "文旅", "非遗"],
-  音乐演出: ["音乐", "演出", "演唱会", "音乐节", "歌手", "巡演"],
-};
-
-const defaultMediaSources = [
-  { name: "人民网", level: "central" },
-  { name: "新华网", level: "central" },
-  { name: "央视网", level: "central" },
-  { name: "环球网", level: "central" },
-  { name: "中国新闻网", level: "central" },
-  { name: "澎湃新闻", level: "national" },
-  { name: "南方+", level: "regional" },
-  { name: "腾讯新闻", level: "portal" },
-  { name: "网易新闻", level: "portal" },
-  { name: "搜狐新闻", level: "portal" },
-  { name: "新浪新闻", level: "portal" },
-  { name: "北京日报客户端", level: "regional" },
-  { name: "上观新闻", level: "regional" },
-  { name: "川观新闻", level: "regional" },
-  { name: "锦观新闻", level: "regional" },
-  { name: "红星新闻", level: "regional" },
 ];
 
 const fallbackSeeds = [
@@ -483,11 +451,13 @@ async function fetchJson(url, options = {}) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
   const response = await fetch(url, {
+    method: options.method || "GET",
     headers: {
       accept: "application/json,text/plain,*/*",
       "user-agent": options.userAgent || USER_AGENTS.desktop,
       ...(options.headers || {}),
     },
+    body: options.body,
     signal: controller.signal,
   });
   clearTimeout(timeoutId);
@@ -530,171 +500,44 @@ async function fetchDouyin(clientProfile = {}) {
 }
 
 async function fetchToutiao(clientProfile = {}) {
-  const data = await fetchJsonWithRetry(
-    TOUTIAO_HOT_ENDPOINT,
-    {
-      headers: TOUTIAO_HOT_ENDPOINT.includes("tikhub.io") && TIKHUB_API_KEY
-        ? { authorization: `Bearer ${TIKHUB_API_KEY}` }
-        : {},
-      userAgent: clientProfile.upstreamUserAgent,
-    },
-    2,
-  );
+  const errors = [];
 
-  return getList(data)
-    .map((item, index) => {
-      const title = pickTitle(item);
-      return {
-        title,
-        platform: "今日头条",
-        rank: Number(item.rank || item.index || item.position || item.order || index + 1),
-        interactions: pickHotValue(item, index + 1),
-        url: pickUrl(item, "今日头条", title),
-        fetchedAt: item.event_time
-          ? Number(item.event_time) * 1000
-          : item.timestamp
-            ? Number(item.timestamp) * 1000
-            : Date.now(),
-      };
-    })
-    .filter((item) => item.title);
-}
-
-async function fetchXiaohongshu(clientProfile = {}) {
-  if (!TIKHUB_API_KEY) {
-    throw new Error("未配置 TIKHUB_API_KEY");
-  }
-
-  const hotListRequest = async () => {
-    const data = await fetchJsonWithRetry(
-      TIKHUB_XHS_HOT_ENDPOINT,
-      {
-        headers: {
-          authorization: `Bearer ${TIKHUB_API_KEY}`,
-        },
-        userAgent: clientProfile.upstreamUserAgent,
-      },
-      2,
-    );
-
-    return getList(data)
-      .map((item, index) => {
-        const title = pickTitle(item);
-        return {
-          title,
-          platform: "小红书",
-          rank: Number(item.rank || item.index || item.position || index + 1),
-          interactions: pickHotValue(item, index + 1),
-          url: pickUrl(item, "小红书", title),
-          fetchedAt: Date.now(),
-        };
-      })
-      .filter((item) => item.title);
-  };
-
-  const searchKeywords = XHS_KEYWORDS.slice(0, 2);
-  const searchRequests = searchKeywords.map(async (keyword) => {
-      const url = new URL(TIKHUB_XHS_ENDPOINT);
-      url.searchParams.set("keyword", keyword);
-      url.searchParams.set("page", "1");
+  for (const endpoint of TOUTIAO_HOT_ENDPOINTS) {
+    try {
       const data = await fetchJsonWithRetry(
-        url.toString(),
+        endpoint,
         {
-          headers: {
-            authorization: `Bearer ${TIKHUB_API_KEY}`,
-          },
           userAgent: clientProfile.upstreamUserAgent,
         },
         2,
       );
 
-      return getList(data)
+      const items = getList(data)
         .map((item, index) => {
-        const title = pickTitle(item);
-        return {
-          title,
-          platform: "小红书",
-          rank: Number(item.rank || item.index || item.position || index + 1),
-          interactions: pickHotValue(item, index + 1),
-          url: pickUrl(item, "小红书", title),
-          fetchedAt: item.time_stamp ? Number(item.time_stamp) * 1000 : Date.now(),
-        };
-        })
-        .filter((item) => item.title);
-    });
-
-  const results = await Promise.allSettled([hotListRequest(), ...searchRequests]);
-
-  const items = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
-  if (items.length) return items;
-
-  const firstError = results.find((result) => result.status === "rejected")?.reason?.message;
-  throw new Error(firstError || "TikHub 小红书接口暂无返回");
-}
-
-async function fetchWechat(clientProfile = {}) {
-  if (TIKHUB_API_KEY) {
-    const results = await Promise.allSettled(
-      WECHAT_MP_KEYWORDS.map(async (keyword) => {
-        const url = new URL(TIKHUB_WECHAT_MP_ENDPOINT);
-        url.searchParams.set("keyword", keyword);
-        url.searchParams.set("offset", "0");
-        url.searchParams.set("sort_type", WECHAT_MP_SORT_TYPE);
-        const data = await fetchJsonWithRetry(
-          url.toString(),
-          {
-            headers: {
-              authorization: `Bearer ${TIKHUB_API_KEY}`,
-            },
-            userAgent: clientProfile.upstreamUserAgent,
-          },
-          4,
-        );
-        return getList(data).map((item, index) => {
           const title = pickTitle(item);
           return {
             title,
-            platform: "公众号",
-            rank: Number(item.rank || item.index || item.position || index + 1),
+            platform: "今日头条",
+            rank: Number(item.rank || item.index || item.position || item.order || index + 1),
             interactions: pickHotValue(item, index + 1),
-            url: pickUrl(item, "公众号", title),
-            fetchedAt: item.publish_time ? Number(item.publish_time) * 1000 : Date.now(),
+            url: pickUrl(item, "今日头条", title),
+            fetchedAt: item.event_time
+              ? Number(item.event_time) * 1000
+              : item.timestamp
+                ? Number(item.timestamp) * 1000
+                : Date.now(),
           };
-        });
-      }),
-    );
+        })
+        .filter((item) => item.title);
 
-    const items = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
-    if (items.length) return items;
-
-    const firstError = results.find((result) => result.status === "rejected")?.reason?.message;
-    throw new Error(firstError || "TikHub 公众号接口暂无返回");
+      if (items.length) return items;
+      errors.push(`${endpoint}: empty`);
+    } catch (error) {
+      errors.push(`${endpoint}: ${error.message}`);
+    }
   }
 
-  if (!TIANAPI_KEY) {
-    throw new Error("未配置 TIKHUB_API_KEY 或 TIANAPI_KEY");
-  }
-
-  const url = new URL(TIANAPI_WECHAT_ENDPOINT);
-  url.searchParams.set("key", TIANAPI_KEY);
-  const data = await fetchJson(url.toString(), {
-    userAgent: clientProfile.upstreamUserAgent,
-  });
-
-  return extractList(data).map((item, index) => {
-    const title = pickTitle(item);
-    return {
-      title,
-      platform: "公众号",
-      rank: Number(item.rank || item.index || item.position || index + 1),
-      interactions: parseHotValue(
-        item.hot || item.hotnum || item.hot_value || item.score || item.readnum || item.read || item.count,
-        index + 1,
-      ),
-      url: pickUrl(item, "公众号", title),
-      fetchedAt: Date.now(),
-    };
-  });
+  throw new Error(`今日头条热榜源暂不可用：${errors.join("；")}`);
 }
 
 async function readPreviousSnapshot() {
@@ -702,15 +545,6 @@ async function readPreviousSnapshot() {
     return JSON.parse(await fs.readFile(SNAPSHOT_FILE, "utf8"));
   } catch {
     return {};
-  }
-}
-
-async function readMediaSources() {
-  try {
-    const sources = JSON.parse(await fs.readFile(MEDIA_SOURCES_FILE, "utf8"));
-    return Array.isArray(sources) && sources.length ? sources : defaultMediaSources;
-  } catch {
-    return defaultMediaSources;
   }
 }
 
@@ -820,8 +654,6 @@ async function getHotItems(clientProfile = { type: "desktop", upstreamUserAgent:
     ["微博", fetchWeibo],
     ["抖音", fetchDouyin],
     ["今日头条", fetchToutiao],
-    ["小红书", fetchXiaohongshu],
-    ["公众号", fetchWechat],
   ];
   const settled = await Promise.allSettled(sourceFetchers.map(([, fetcher]) => fetcher(clientProfile)));
   const sources = settled.map((result, index) => ({
@@ -852,94 +684,8 @@ async function getHotItems(clientProfile = { type: "desktop", upstreamUserAgent:
   return payload;
 }
 
-function getMediaTitle(item) {
-  return normalizeTitle(
-    item.title ||
-      item.article_title ||
-      item.name ||
-      item.desc ||
-      item.content ||
-      item.text,
-  );
-}
-
-function getMediaUrl(item, title) {
-  return item.url || item.link || item.article_url || item.source_url || platformSearchUrls["公众号"](title);
-}
-
-function pickFirstText(...values) {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim()) return normalizeTitle(value);
-    if (value && typeof value === "object") {
-      const nested = pickFirstText(
-        value.name,
-        value.nickname,
-        value.title,
-        value.account_name,
-        value.author_name,
-        value.source_name,
-        value.media_name,
-      );
-      if (nested) return nested;
-    }
-  }
-  return "";
-}
-
-function getMediaAccountName(item) {
-  return pickFirstText(
-    item.account_name,
-    item.accountName,
-    item.official_account_name,
-    item.officialAccountName,
-    item.wechat_name,
-    item.wechatName,
-    item.wx_name,
-    item.wxName,
-    item.mp_name,
-    item.mpName,
-    item.media_name,
-    item.mediaName,
-    item.source_name,
-    item.sourceName,
-    item.publisher_name,
-    item.publisherName,
-    item.author_name,
-    item.authorName,
-    item.sourcename,
-    item.source,
-    item.media,
-    item.publisher,
-    item.account,
-    item.author,
-    item.user,
-    item.profile,
-    item.wechat,
-  );
-}
-
 function normalizeMediaName(name) {
   return normalizeTitle(name).replace(/\s+/g, "").replace(/微信公众号|公众号|新闻客户端|客户端$/g, "");
-}
-
-function matchMediaSource(accountName, sources) {
-  const normalizedAccount = normalizeMediaName(accountName);
-  if (!normalizedAccount) return null;
-  return sources.find((source) => {
-    const normalizedSource = normalizeMediaName(source.name);
-    return normalizedAccount === normalizedSource || normalizedAccount.includes(normalizedSource);
-  });
-}
-
-function isTodayInShanghai(timestamp) {
-  if (!Number.isFinite(timestamp) || timestamp <= 0) return false;
-  const formatter = new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  return formatter.format(new Date(timestamp)) === formatter.format(new Date());
 }
 
 function getPublishedAt(item) {
@@ -950,117 +696,263 @@ function getPublishedAt(item) {
   return numeric > 1000000000000 ? numeric : numeric * 1000;
 }
 
-function getMediaKeywords(industry) {
-  return mediaIndustryKeywords[industry] || mediaIndustryKeywords["艺术"];
+function formatDateForRedfox(date) {
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const pick = (type) => parts.find((part) => part.type === type)?.value || "";
+  return `${pick("year")}-${pick("month")}-${pick("day")}`;
 }
 
-async function fetchMediaFeed(clientProfile, filters = {}) {
-  const industry = filters.industry || "艺术";
-  const platform = filters.platform || "公众号";
-  const mediaName = filters.media || "";
-  const cacheKey = `${clientProfile.type}:${platform}:${industry}:${mediaName}`;
+function isWithinRecentDays(timestamp, days = 7) {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return false;
+  return Date.now() - timestamp <= days * 24 * 60 * 60 * 1000;
+}
+
+function getAccountCandidateName(item, platform) {
+  if (platform === "抖音") return normalizeTitle(item.nickname || item.accountName || item.accountId || item.uid);
+  if (platform === "小红书") return normalizeTitle(item.accountName || item.nickname || item.accountId || item.userId);
+  return normalizeTitle(item.accountName || item.nickname || item.account || item.name);
+}
+
+function getAccountCandidateId(item, platform) {
+  if (platform === "抖音") return normalizeTitle(item.accountId || item.displayId || item.uid || item.shortId);
+  if (platform === "小红书") return normalizeTitle(item.accountId || item.userId);
+  return normalizeTitle(item.account || item.accountName);
+}
+
+function pickAccountCandidate(list, accountName, platform) {
+  const normalizedTarget = normalizeMediaName(accountName);
+  return (
+    list.find((item) => normalizeMediaName(getAccountCandidateName(item, platform)) === normalizedTarget) ||
+    list.find((item) => normalizeMediaName(getAccountCandidateName(item, platform)).includes(normalizedTarget)) ||
+    list[0] ||
+    null
+  );
+}
+
+function isSameAccountWork(item, accountName, accountId, platform) {
+  const target = normalizeMediaName(accountName);
+  const id = normalizeMediaName(accountId);
+  const names =
+    platform === "抖音"
+      ? [item.accountName, item.authorId, item.authorLink]
+      : [item.accountNickname, item.accountUserid, item.accountName, item.authorId];
+  const normalizedNames = names.map(normalizeMediaName).filter(Boolean);
+  return normalizedNames.some((value) => value === target || value.includes(target) || value === id || value.includes(id));
+}
+
+function getAccountWorkTime(item, platform) {
+  if (platform === "小红书") return getPublishedAt({ publishTime: item.workPublishTime });
+  return getPublishedAt(item);
+}
+
+function mapRedfoxWork(item, platform, accountName) {
+  const title = normalizeTitle(
+    platform === "小红书"
+      ? item.workTitle || item.workDesc
+      : item.title || item.content || item.summary,
+  );
+  const publishedAt = getAccountWorkTime(item, platform);
+  const mediaName = normalizeTitle(
+    platform === "抖音"
+      ? item.accountName || accountName
+      : platform === "小红书"
+        ? item.accountNickname || accountName
+        : item.author || item.accountName || accountName,
+  );
+  return {
+    title,
+    platform,
+    mediaName,
+    mediaLevel: "",
+    industry: detectIndustry(`${title} ${item.content || ""} ${item.summary || ""} ${item.workDesc || ""}`),
+    publishedAt,
+    url: item.workUrl || item.sourceUrl || item.url || getPlatformUrl(platform, title),
+    matchReason: `${platform}账号「${mediaName}」近一周发布内容`,
+    rank: 0,
+    readCount: item.readCount || item.workReadedCount || item.playCount || 0,
+    likeCount: item.likeCount || item.workLikedCount || 0,
+    commentCount: item.commentCount || item.workCommentsCount || 0,
+    coverUrl: item.coverUrl || "",
+  };
+}
+
+async function postRedfox(endpoint, body, clientProfile) {
+  if (!REDFOX_API_KEY) throw new Error("未配置 REDFOX_API_KEY");
+  return fetchJsonWithRetry(
+    `${REDFOX_BASE_URL}${endpoint}`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        REDFOX_API_KEY,
+      },
+      body: JSON.stringify(body),
+      userAgent: clientProfile.upstreamUserAgent,
+    },
+    2,
+  );
+}
+
+async function fetchRedfoxAccountSearch(platform, accountName, clientProfile) {
+  const endpoint =
+    platform === "抖音"
+      ? REDFOX_ENDPOINTS.douyinSearchUser
+      : platform === "小红书"
+        ? REDFOX_ENDPOINTS.xhsSearchUser
+        : REDFOX_ENDPOINTS.gzhSearchUser;
+  const sortType = platform === "公众号" ? "_0" : "default";
+  const data = await postRedfox(endpoint, { keyword: accountName, offset: 0, sortType }, clientProfile);
+  return getList(data);
+}
+
+async function fetchRedfoxSearchWorks(platform, accountName, accountId, clientProfile) {
+  const endpoint = platform === "抖音" ? REDFOX_ENDPOINTS.douyinSearchArticle : REDFOX_ENDPOINTS.xhsSearchArticle;
+  const data = await postRedfox(endpoint, { keyword: accountName, offset: 0, sortType: "default" }, clientProfile);
+  return getList(data)
+    .filter((item) => isSameAccountWork(item, accountName, accountId, platform))
+    .filter((item) => isWithinRecentDays(getAccountWorkTime(item, platform), 7))
+    .map((item) => mapRedfoxWork(item, platform, accountName));
+}
+
+async function fetchRedfoxGzhWorks(accountCandidate, accountName, clientProfile) {
+  const end = new Date();
+  const start = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const account = accountCandidate?.account || accountCandidate?.accountName || accountName;
+  const data = await postRedfox(
+    REDFOX_ENDPOINTS.gzhWorkList,
+    {
+      account,
+      accountName: accountCandidate?.accountName || accountName,
+      offset: 0,
+      sortType: "_2",
+      publishTimeStart: formatDateForRedfox(start),
+      publishTimeEnd: formatDateForRedfox(end),
+    },
+    clientProfile,
+  );
+  return getList(data)
+    .filter((item) => isWithinRecentDays(getAccountWorkTime(item, "公众号"), 7))
+    .map((item) => mapRedfoxWork(item, "公众号", accountCandidate?.accountName || accountName));
+}
+
+async function fetchAccountPlatformFeed(platform, accountName, clientProfile) {
+  const accountList = await fetchRedfoxAccountSearch(platform, accountName, clientProfile);
+  const accountCandidate = pickAccountCandidate(accountList, accountName, platform);
+  if (!accountCandidate) {
+    return {
+      platform,
+      ok: false,
+      error: "未找到匹配账号",
+      account: null,
+      items: [],
+    };
+  }
+
+  const resolvedName = getAccountCandidateName(accountCandidate, platform) || accountName;
+  const accountId = getAccountCandidateId(accountCandidate, platform);
+  const items =
+    platform === "公众号"
+      ? await fetchRedfoxGzhWorks(accountCandidate, resolvedName, clientProfile)
+      : await fetchRedfoxSearchWorks(platform, resolvedName, accountId, clientProfile);
+
+  return {
+    platform,
+    ok: true,
+    error: "",
+    account: {
+      name: resolvedName,
+      id: accountId,
+      avatar: accountCandidate.avatarUrl || accountCandidate.accountAvatar || "",
+      followers: accountCandidate.followerCount || accountCandidate.accountFans || 0,
+    },
+    items,
+  };
+}
+
+async function fetchAccountFeed(clientProfile, filters = {}) {
+  const accountName = normalizeTitle(filters.account || "");
+  const platforms = String(filters.platforms || "抖音,小红书,公众号")
+    .split(",")
+    .map((platform) => platform.trim())
+    .filter((platform) => ["抖音", "小红书", "公众号"].includes(platform));
+  const cacheKey = `account:${clientProfile.type}:${accountName}:${platforms.join("|")}`;
   const cached = mediaCache[cacheKey];
   if (cached && Date.now() - cached.cachedAt < HOT_CACHE_TTL_MS) {
     return { ...cached.payload, cached: true };
   }
 
-  if (platform !== "公众号") {
+  if (!accountName) {
     return {
       updatedAt: new Date().toISOString(),
       clientDevice: clientProfile.type,
-      platform,
-      industry,
       live: false,
       sources: [],
       items: [],
-      message: "媒体监测 MVP 当前先支持公众号文章搜索；微博、小红书、抖音需要补充账号 ID 后接入。",
+      message: "请输入账号名称后再保存监测。",
     };
   }
 
-  if (!TIKHUB_API_KEY) {
+  if (!REDFOX_API_KEY) {
     return {
       updatedAt: new Date().toISOString(),
       clientDevice: clientProfile.type,
-      platform,
-      industry,
       live: false,
       sources: [],
       items: [],
-      message: "未配置 TIKHUB_API_KEY",
+      message: "未配置 REDFOX_API_KEY。请在 Render 环境变量中添加后重新部署。",
     };
   }
 
-  const mediaSources = (await readMediaSources()).filter((source) => !mediaName || source.name === mediaName);
-  const keywords = getMediaKeywords(industry).slice(0, 3);
-  const selectedMedia = mediaSources.slice(0, mediaName ? 1 : 8);
-
-  const requests = keywords.map(async (keyword) => {
-      const url = new URL(TIKHUB_WECHAT_MP_ENDPOINT);
-      url.searchParams.set("keyword", keyword);
-      url.searchParams.set("offset", "0");
-      url.searchParams.set("sort_type", "_2");
-      const data = await fetchJsonWithRetry(
-        url.toString(),
-        {
-          headers: {
-            authorization: `Bearer ${TIKHUB_API_KEY}`,
-          },
-          userAgent: clientProfile.upstreamUserAgent,
+  const settled = await Promise.allSettled(
+    platforms.map((platform) => fetchAccountPlatformFeed(platform, accountName, clientProfile)),
+  );
+  const sources = settled.map((result, index) =>
+    result.status === "fulfilled"
+      ? {
+          platform: result.value.platform,
+          ok: result.value.ok,
+          error: result.value.error,
+          account: result.value.account,
+          count: result.value.items.length,
+        }
+      : {
+          platform: platforms[index],
+          ok: false,
+          error: result.reason?.message || "接口请求失败",
+          account: null,
+          count: 0,
         },
-        2,
-      );
-
-      return getList(data)
-        .map((item, index) => {
-          const title = getMediaTitle(item);
-          const publishedAt = getPublishedAt(item);
-          const accountName = getMediaAccountName(item);
-          const matchedSource = matchMediaSource(accountName, selectedMedia);
-          return {
-            title,
-            platform: "公众号",
-            mediaName: matchedSource?.name || accountName,
-            mediaLevel: matchedSource?.level || "",
-            industry: detectIndustry(`${title} ${keyword}`),
-            publishedAt,
-            url: getMediaUrl(item, title),
-            matched: Boolean(matchedSource),
-            accountName,
-            matchReason: matchedSource
-              ? `账号：${matchedSource.name}；关键词：${keyword}；今日发布`
-              : `非目标媒体账号：${accountName || "未知"}`,
-            rank: index + 1,
-          };
-        })
-        .filter((item) => item.title && item.matched && isTodayInShanghai(item.publishedAt));
-    });
-
-  const settled = await Promise.allSettled(requests);
+  );
   const items = settled
-    .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
-    .filter((item) => item.industry === industry || calcFit(item.title) > 0)
+    .flatMap((result) => (result.status === "fulfilled" ? result.value.items : []))
+    .filter((item) => item.title && item.url)
     .sort((a, b) => b.publishedAt - a.publishedAt)
-    .filter((item, index, list) => list.findIndex((other) => other.title === item.title) === index)
-    .slice(0, 80);
+    .filter((item, index, list) => list.findIndex((other) => other.platform === item.platform && other.url === item.url) === index)
+    .slice(0, 120)
+    .map((item, index) => ({ ...item, rank: index + 1 }));
 
   const payload = {
     updatedAt: new Date().toISOString(),
     clientDevice: clientProfile.type,
-    platform,
-    industry,
+    account: accountName,
+    platforms,
     live: items.length > 0,
-    sources: selectedMedia.map((source) => ({ name: source.name, level: source.level })),
+    sources,
     items,
     message: items.length
       ? ""
-      : "暂未匹配到目标媒体公众号今日发布的相关内容。当前只保留媒体名单内账号，且限定为当天发布。",
+      : "暂未匹配到该账号近一周内容。抖音/小红书第一版通过作品搜索按作者过滤，若账号名不唯一，可后续改为保存账号 ID。",
   };
 
   mediaCache[cacheKey] = {
     cachedAt: Date.now(),
     payload,
   };
-
   return payload;
 }
 
@@ -1103,15 +995,14 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
-    if (request.url.startsWith("/api/media-feed")) {
+    if (request.url.startsWith("/api/account-feed")) {
       const url = new URL(request.url, `http://localhost:${PORT}`);
       sendJson(
         response,
         200,
-        await fetchMediaFeed(detectClientProfile(request), {
-          platform: url.searchParams.get("platform") || "公众号",
-          industry: url.searchParams.get("industry") || "艺术",
-          media: url.searchParams.get("media") || "",
+        await fetchAccountFeed(detectClientProfile(request), {
+          account: url.searchParams.get("account") || "",
+          platforms: url.searchParams.get("platforms") || "",
         }),
       );
       return;
