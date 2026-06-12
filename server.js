@@ -906,6 +906,45 @@ function normalizeMediaName(name) {
   return normalizeTitle(name).replace(/\s+/g, "").replace(/微信公众号|公众号|新闻客户端|客户端$/g, "");
 }
 
+function buildAccountTextBlob(item = {}, platform) {
+  if (platform === "抖音") {
+    return [
+      item.accountName,
+      item.authorId,
+      item.authorLink,
+      item.title,
+      item.content,
+      item.summary,
+    ]
+      .map(normalizeMediaName)
+      .join(" ");
+  }
+
+  if (platform === "小红书") {
+    return [
+      item.accountNickname,
+      item.accountUserid,
+      item.accountName,
+      item.authorId,
+      item.workTitle,
+      item.workDesc,
+    ]
+      .map(normalizeMediaName)
+      .join(" ");
+  }
+
+  return [
+    item.author,
+    item.accountName,
+    item.originalAuthor,
+    item.title,
+    item.summary,
+    item.content,
+  ]
+    .map(normalizeMediaName)
+    .join(" ");
+}
+
 function getPublishedAt(item) {
   const value = item.publish_time || item.publishTime || item.create_time || item.time || item.timestamp;
   if (!value) return 0;
@@ -963,12 +1002,18 @@ function isSameAccountWork(item, accountName, accountId, platform) {
   return normalizedNames.some((value) => value === target || value.includes(target) || value === id || value.includes(id));
 }
 
+function isLooseAccountWork(item, accountName, platform) {
+  const target = normalizeMediaName(accountName);
+  if (!target) return false;
+  return buildAccountTextBlob(item, platform).includes(target);
+}
+
 function getAccountWorkTime(item, platform) {
   if (platform === "小红书") return getPublishedAt({ publishTime: item.workPublishTime });
   return getPublishedAt(item);
 }
 
-function mapRedfoxWork(item, platform, accountName) {
+function mapRedfoxWork(item, platform, accountName, matchReason = "") {
   const title = normalizeTitle(
     platform === "小红书"
       ? item.workTitle || item.workDesc
@@ -990,7 +1035,7 @@ function mapRedfoxWork(item, platform, accountName) {
     industry: detectIndustry(`${title} ${item.content || ""} ${item.summary || ""} ${item.workDesc || ""}`),
     publishedAt,
     url: item.workUrl || item.sourceUrl || item.url || getPlatformUrl(platform, title),
-    matchReason: `${platform}账号「${mediaName}」近一周发布内容`,
+    matchReason: matchReason || `${platform}账号「${mediaName}」近一周发布内容`,
     rank: 0,
     readCount: item.readCount || item.workReadedCount || item.playCount || 0,
     likeCount: item.likeCount || item.workLikedCount || 0,
@@ -1051,10 +1096,23 @@ async function fetchRedfoxAccountSearch(platform, accountName, clientProfile) {
 async function fetchRedfoxSearchWorks(platform, accountName, accountId, clientProfile) {
   const endpoint = platform === "抖音" ? REDFOX_ENDPOINTS.douyinSearchArticle : REDFOX_ENDPOINTS.xhsSearchArticle;
   const data = await postRedfox(endpoint, { keyword: accountName, offset: 0, sortType: "default" }, clientProfile);
-  return getList(data)
+  const list = getList(data).filter((item) => isWithinRecentDays(getAccountWorkTime(item, platform), 7));
+  const exactMatches = list
     .filter((item) => isSameAccountWork(item, accountName, accountId, platform))
-    .filter((item) => isWithinRecentDays(getAccountWorkTime(item, platform), 7))
     .map((item) => mapRedfoxWork(item, platform, accountName));
+
+  if (exactMatches.length) return exactMatches;
+
+  return list
+    .filter((item) => isLooseAccountWork(item, accountName, platform))
+    .map((item) =>
+      mapRedfoxWork(
+        item,
+        platform,
+        accountName,
+        `${platform}搜索到与账号名「${accountName}」高度相关的近一周内容，当前为名称相关匹配。`,
+      ),
+    );
 }
 
 async function fetchRedfoxGzhWorks(accountCandidate, accountName, clientProfile) {
@@ -1078,10 +1136,53 @@ async function fetchRedfoxGzhWorks(accountCandidate, accountName, clientProfile)
     .map((item) => mapRedfoxWork(item, "公众号", accountCandidate?.accountName || accountName));
 }
 
+async function fetchRedfoxGzhKeywordWorks(accountName, clientProfile) {
+  const data = await postRedfox(
+    REDFOX_ENDPOINTS.gzhSearchArticle,
+    { keyword: accountName, offset: 0, sortType: "_2" },
+    clientProfile,
+  );
+
+  return getList(data)
+    .filter((item) => isWithinRecentDays(getAccountWorkTime(item, "公众号"), 7))
+    .filter((item) => isLooseAccountWork(item, accountName, "公众号"))
+    .map((item) =>
+      mapRedfoxWork(
+        item,
+        "公众号",
+        accountName,
+        `公众号搜索到与账号名「${accountName}」高度相关的近一周内容，当前为名称相关匹配。`,
+      ),
+    );
+}
+
 async function fetchAccountPlatformFeed(platform, accountName, clientProfile) {
   const accountList = await fetchRedfoxAccountSearch(platform, accountName, clientProfile);
   const accountCandidate = pickAccountCandidate(accountList, accountName, platform);
-  if (!accountCandidate) {
+  const resolvedName = getAccountCandidateName(accountCandidate, platform) || accountName;
+  const accountId = getAccountCandidateId(accountCandidate, platform);
+  let items = [];
+  let error = "";
+
+  if (accountCandidate) {
+    items =
+      platform === "公众号"
+        ? await fetchRedfoxGzhWorks(accountCandidate, resolvedName, clientProfile)
+        : await fetchRedfoxSearchWorks(platform, resolvedName, accountId, clientProfile);
+  }
+
+  if (!items.length) {
+    items =
+      platform === "公众号"
+        ? await fetchRedfoxGzhKeywordWorks(accountName, clientProfile)
+        : await fetchRedfoxSearchWorks(platform, accountName, accountId || accountName, clientProfile);
+
+    if (items.length) {
+      error = "未命中精确账号，已切换为名称相关内容匹配";
+    }
+  }
+
+  if (!accountCandidate && !items.length) {
     return {
       platform,
       ok: false,
@@ -1091,22 +1192,15 @@ async function fetchAccountPlatformFeed(platform, accountName, clientProfile) {
     };
   }
 
-  const resolvedName = getAccountCandidateName(accountCandidate, platform) || accountName;
-  const accountId = getAccountCandidateId(accountCandidate, platform);
-  const items =
-    platform === "公众号"
-      ? await fetchRedfoxGzhWorks(accountCandidate, resolvedName, clientProfile)
-      : await fetchRedfoxSearchWorks(platform, resolvedName, accountId, clientProfile);
-
   return {
     platform,
     ok: true,
-    error: "",
+    error,
     account: {
       name: resolvedName,
       id: accountId,
-      avatar: accountCandidate.avatarUrl || accountCandidate.accountAvatar || "",
-      followers: accountCandidate.followerCount || accountCandidate.accountFans || 0,
+      avatar: accountCandidate?.avatarUrl || accountCandidate?.accountAvatar || "",
+      followers: accountCandidate?.followerCount || accountCandidate?.accountFans || 0,
     },
     items,
   };
@@ -1184,7 +1278,7 @@ async function fetchAccountFeed(clientProfile, filters = {}) {
     items,
     message: items.length
       ? ""
-      : "暂未匹配到该账号近一周内容。抖音/小红书第一版通过作品搜索按作者过滤，若账号名不唯一，可后续改为保存账号 ID。",
+      : "暂未匹配到该账号近一周内容。可以换更准确的账号名，或先用平台内更常用的账号名称再试一次。",
   };
 
   mediaCache[cacheKey] = {
